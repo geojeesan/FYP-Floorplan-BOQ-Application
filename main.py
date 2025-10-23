@@ -14,13 +14,17 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QPixmap, QImage, QIcon, QWheelEvent
 from PySide6.QtCore import Qt, QEvent
 
-# Optional OCR
+import easyocr
 try:
-    import pytesseract
-    _HAS_PYTESSERACT = True
-except Exception:
-    _HAS_PYTESSact = False
-    _HAS_PYTESSACT = False
+    # Initialize the reader once. This will download models on first run.
+    print("Loading EasyOCR model...")
+    EASYOCR_READER = easyocr.Reader(['en'])
+    _HAS_EASYOCR = True
+    print("EasyOCR loaded successfully.")
+except Exception as e:
+    EASYOCR_READER = None
+    _HAS_EASYOCR = False
+    print(f"Failed to load EasyOCR. OCR will be disabled: {e}")
 
 # ----------------- Utility functions for RAG -----------------
 
@@ -35,17 +39,22 @@ def extract_text_from_pdf(path):
             texts.append(t)
         return "\n\n".join(texts)
     except Exception as e:
-        return ""  # calling code will handle empty
+        return "" 
 
 
 def ocr_image(path):
-    """Attempts OCR using pytesseract if available."""
-    if not _HAS_PYTESSACT:
+    """Attempts OCR using EasyOCR if available."""
+    if not _HAS_EASYOCR:
         return ""
     try:
-        img = Image.open(path)
-        return pytesseract.image_to_string(img)
-    except Exception:
+        results = EASYOCR_READER.readtext(path) 
+        
+        # easyocr returns [bbox, text, prob] Extracting only text
+        text_list = [item[1] for item in results]
+        
+        return "\n".join(text_list)
+    except Exception as e:
+        print(f"Error occurred during EasyOCR: {e}")
         return ""
 
 
@@ -89,10 +98,18 @@ def retrieve_top_chunks(chunks, query, top_k=3):
 
 # ----------------- Ollama interaction -----------------
 
-def call_ollama_phi3(prompt, timeout=30):
-    """Call ollama phi3 in non-interactive mode using --prompt."""
+def call_ollama_llava(prompt, image_path=None, timeout=60):
+    """
+    Call ollama llava in non-interactive mode.
+    If image_path is provided, it passes the image to the model.
+    """
     try:
-        cmd = ["ollama", "run", "phi3", "prompt", prompt]
+        # Standard command: ollama run <model> <prompt> [image_path]
+        cmd = ["ollama", "run", "llava", prompt]
+        
+        if image_path:
+            cmd.append(image_path)
+            
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
         out = proc.stdout.decode("utf-8", errors="ignore")
         if not out:
@@ -101,7 +118,7 @@ def call_ollama_phi3(prompt, timeout=30):
     except FileNotFoundError:
         return "Error: `ollama` CLI not found. Please install ollama and ensure it's on your PATH."
     except subprocess.TimeoutExpired:
-        return "Error: ollama call timed out."
+        return "Error: ollama (llava) call timed out."
     except Exception as e:
         return f"Error calling ollama: {e}"
 
@@ -231,12 +248,12 @@ class DocumentViewer(QWidget):
         w = QWidget()
         layout = QVBoxLayout(w)
         layout.setContentsMargins(8, 8, 8, 8)
-        title = QLabel("Document Chatbot (RAG)")
+        title = QLabel("Document Chatbot (Llava)")
         title.setStyleSheet("font-weight: bold; font-size: 16px;")
         layout.addWidget(title)
 
         # Indexing button
-        index_btn = QPushButton("Index Document")
+        index_btn = QPushButton("Index Document (for RAG)")
         index_btn.clicked.connect(self.index_document)
         layout.addWidget(index_btn)
 
@@ -366,12 +383,16 @@ class DocumentViewer(QWidget):
             text = extract_text_from_pdf(self.file_path)
         else:
             text = ocr_image(self.file_path)
-            print(text)
+            if text:
+                self.chat_history.append(f"[System] OCR extracted text (truncated): {text[:200]}...")
+            else:
+                self.chat_history.append("[System] OCR (pytesseract) found no text.")
+                
             if not text:
-                # fallback to a small descriptive text
-                text = f"(No OCR available) File: {self.file_path}\n" + ""  # keep short
-        if not text.strip():
-            self.chat_history.append("[System] No text could be extracted from the document.")
+                text = f"(No OCR available) File: {self.file_path}\n" + ""
+        
+        if not text.strip() or text.startswith("(No OCR available)"):
+            self.chat_history.append("[System] No text could be extracted or indexed.")
             self.indexed_chunks = []
             self.indexed = False
             return
@@ -392,34 +413,54 @@ class DocumentViewer(QWidget):
         thread.start()
 
     def _process_question(self, question):
-        # If not indexed, attempt to index automatically
-        if not self.indexed:
-            self.chat_history.append("[System] Document not indexed yet — attempting automatic indexing...")
-            self.index_document()
+        is_pdf = self.file_path.lower().endswith('.pdf')
+        
+        if is_pdf:
+            # --- RAG Logic for PDFs ---
+            
+            # If not indexed, attempt to index automatically
             if not self.indexed:
-                self.chat_history.append("[System] Indexing failed. Cannot answer from document.")
-                return
+                self.chat_history.append("[System] Document not indexed yet — attempting automatic indexing...")
+                self.index_document()
+                if not self.indexed:
+                    self.chat_history.append("[System] Indexing failed. Cannot answer from document.")
+                    return
 
-        # Retrieve top chunks
-        top = retrieve_top_chunks(self.indexed_chunks, question, top_k=4)
-        if not top:
-            # No matches — still call phi3 but warn user
-            context = ""
-            self.chat_history.append("[System] No strongly relevant passages found; answering without document context.")
+            # Retrieve top chunks
+            top = retrieve_top_chunks(self.indexed_chunks, question, top_k=4)
+            if not top:
+                # No matches — still call llava but warn user
+                context = ""
+                self.chat_history.append("[System] No strongly relevant passages found; answering without document context.")
+            else:
+                context = "\n\n---\n\n".join(top)
+
+            # Build a prompt that instructs the model to use the context.
+            prompt = (
+                "You are a helpful assistant. Use the provided document context to answer the question.\n"
+                "If the answer is not contained in the context, say you don't know instead of making up facts.\n\n"
+                "Context:\n" + context + "\n\nQuestion: " + question + "\n\nAnswer:"
+            )
+
+            self.chat_history.append("[System] Sending prompt to llava (ollama)...")
+            # Call llava WITHOUT an image path (text-only RAG)
+            response = call_ollama_llava(prompt, timeout=60)
+            
         else:
-            context = "\n\n---\n\n".join(top)
+            # --- VQA Logic for Images ---
+            # We bypass RAG and send the image path directly to llava
+            
+            prompt = (
+                "You are a helpful visual assistant. Look at the image and answer the question.\n\n"
+                "Question: " + question + "\n\nAnswer:"
+            )
 
-        # Build a prompt that instructs the model to use the context.
-        prompt = (
-            "You are a helpful assistant. Use the provided document context to answer the question.\n"
-            "If the answer is not contained in the context, say you don't know instead of making up facts.\n\n"
-            "Context:\n" + context + "\n\nQuestion: " + question + "\n\nAnswer:"
-        )
+            self.chat_history.append(f"[System] Sending prompt and image to llava (ollama)...")
+            # Call llava WITH the image path
+            response = call_ollama_llava(prompt, image_path=self.file_path, timeout=60)
 
-        self.chat_history.append("[System] Sending prompt to phi3 (ollama)...")
-        response = call_ollama_phi3(prompt, timeout=60)
         # Append the model's response
-        self.chat_history.append(f"phi3: {response}")
+        self.chat_history.append(f"llava: {response}")
 
 
 if __name__ == "__main__":
