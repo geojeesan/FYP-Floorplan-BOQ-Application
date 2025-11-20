@@ -1,24 +1,41 @@
 import sys
-import subprocess
+import os
 import threading
+import subprocess
 import re
+import inspect
 from collections import Counter
 
 import fitz  # PyMuPDF
 from PIL import Image
+import numpy as np
+import cv2
+
+# PySide6 imports
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QScrollArea, QLabel, QFileDialog, QTabWidget, QSplitter,
-    QFrame, QTabBar, QPushButton, QTextEdit, QLineEdit, QMessageBox
+    QFrame, QTabBar, QPushButton, QTextEdit, QLineEdit, QMessageBox,
+    QToolButton, QDockWidget
 )
-from PySide6.QtGui import QPixmap, QImage, QIcon, QWheelEvent
-from PySide6.QtCore import Qt, QEvent
+from PySide6.QtGui import QPixmap, QImage, QIcon, QWheelEvent, QPainter, QColor
+from PySide6.QtCore import Qt, QEvent, Signal, Slot, QThread, QSize
 
+# --- CubiCasa5k Imports ---
+try:
+    import torch
+    import torch.nn as nn
+    from floortrans.models.hg_furukawa_original import hg_furukawa_original
+except ImportError as e:
+    print(f"Error importing CubiCasa modules: {e}")
+    print("Ensure main.py is running from the root of the CubiCasa5k repository.")
+    torch = None
+
+# --- EasyOCR Setup ---
 import easyocr
 try:
-    # Initialize the reader once. This will download models on first run.
     print("Loading EasyOCR model...")
-    EASYOCR_READER = easyocr.Reader(['en'])
+    EASYOCR_READER = easyocr.Reader(['en'], gpu=torch.cuda.is_available() if torch else False)
     _HAS_EASYOCR = True
     print("EasyOCR loaded successfully.")
 except Exception as e:
@@ -26,451 +43,550 @@ except Exception as e:
     _HAS_EASYOCR = False
     print(f"Failed to load EasyOCR. OCR will be disabled: {e}")
 
-# ----------------- Utility functions for RAG -----------------
 
-def extract_text_from_pdf(path):
-    """Extracts text from every page of the PDF and returns as a single string."""
-    try:
-        doc = fitz.open(path)
-        texts = []
-        for i in range(len(doc)):
-            page = doc.load_page(i)
-            t = page.get_text("text")
-            texts.append(t)
-        return "\n\n".join(texts)
-    except Exception as e:
-        return "" 
+# ----------------- Constants & Helpers -----------------
 
+ROOM_CLASSES = [
+    "Background", "Outdoor", "Wall", "Kitchen", "Living Room", 
+    "Bed Room", "Bath", "Entry", "Railing", "Storage", "Garage", "Undefined"
+]
 
-def ocr_image(path):
-    """Attempts OCR using EasyOCR if available."""
-    if not _HAS_EASYOCR:
-        return ""
-    try:
-        results = EASYOCR_READER.readtext(path) 
-        
-        # easyocr returns [bbox, text, prob] Extracting only text
-        text_list = [item[1] for item in results]
-        
-        return "\n".join(text_list)
-    except Exception as e:
-        print(f"Error occurred during EasyOCR: {e}")
-        return ""
+ICON_CLASSES = [
+    "No Icon", "Window", "Door", "Closet", "Electrical Appliance", 
+    "Toilet", "Sink", "Sauna Bench", "Fire Place", "Bathtub", "Chimney"
+]
 
-
-def chunk_text(text, max_chars=1500, overlap=200):
-    """Split text into chunks with overlap. Returns list of chunks."""
-    if not text:
-        return []
-    text = text.replace('\r', '')
-    start = 0
-    chunks = []
-    while start < len(text):
-        end = start + max_chars
-        chunk = text[start:end]
-        chunks.append(chunk.strip())
-        start = end - overlap
-        if start < 0:
-            start = 0
-    return chunks
-
-
-def score_chunk_by_query(chunk, query):
-    """A naive relevance score by keyword overlap (case-insensitive)."""
-    q_toks = re.findall(r"\w+", query.lower())
-    if not q_toks:
-        return 0
-    chunk_toks = re.findall(r"\w+", chunk.lower())
-    if not chunk_toks:
-        return 0
-    counter = Counter(chunk_toks)
-    score = sum(counter[t] for t in q_toks)
-    return score
-
-
-def retrieve_top_chunks(chunks, query, top_k=3):
-    """Return top_k chunks by naive score."""
-    scored = [(score_chunk_by_query(c, query), i, c) for i, c in enumerate(chunks)]
-    scored.sort(reverse=True)
-    top = [c for s, i, c in scored[:top_k] if s > 0]
-    return top
-
-
-# ----------------- Ollama interaction -----------------
-
-def call_ollama_llava(prompt, image_path=None, timeout=60):
+def get_class_colors():
     """
-    Call ollama llava in non-interactive mode.
-    If image_path is provided, it passes the image to the model.
+    Generates the same color maps used in inference.
+    Returns (room_colors, icon_colors).
     """
-    try:
-        # Standard command: ollama run <model> <prompt> [image_path]
-        cmd = ["ollama", "run", "llava", prompt]
-        
-        if image_path:
-            cmd.append(image_path)
+    np.random.seed(42)
+    
+    # Room colors (13 to be safe, for 12 classes)
+    room_colors = np.random.randint(100, 255, (13, 3), dtype=np.uint8)
+    room_colors[0] = [0, 0, 0]
+    
+    # Icon colors
+    icon_colors = np.random.randint(0, 200, (12, 3), dtype=np.uint8)
+    icon_colors[:, 0] = 255  # High Red channel for visibility
+    icon_colors[0] = [0, 0, 0]
+    
+    return room_colors, icon_colors
+
+
+# ----------------- CubiCasa Analysis Thread -----------------
+
+class CubiCasaWorker(QThread):
+    """
+    Background thread to run CubiCasa5k inference.
+    Generates separate transparent layers for Rooms and Items.
+    """
+    finished = Signal(str, str)  # Emits (room_layer_path, item_layer_path)
+    error = Signal(str)
+
+    def __init__(self, image_path, model_path="model_best_val_loss_var.pkl"):
+        super().__init__()
+        self.image_path = image_path
+        self.model_path = model_path
+
+    def run(self):
+        if not torch:
+            self.error.emit("PyTorch or CubiCasa modules not found.")
+            return
+
+        if not os.path.exists(self.model_path):
+            self.error.emit(f"Model file not found: {self.model_path}")
+            return
+
+        try:
+            print("--- Starting CubiCasa Analysis ---")
             
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
-        out = proc.stdout.decode("utf-8", errors="ignore")
-        if not out:
-            return proc.stderr.decode("utf-8", errors="ignore")
-        return out
-    except FileNotFoundError:
-        return "Error: `ollama` CLI not found. Please install ollama and ensure it's on your PATH."
-    except subprocess.TimeoutExpired:
-        return "Error: ollama (llava) call timed out."
-    except Exception as e:
-        return f"Error calling ollama: {e}"
+            # 1. Load and Preprocess Image
+            fplan = cv2.imread(self.image_path)
+            if fplan is None:
+                self.error.emit("Could not read image file.")
+                return
+                
+            fplan = cv2.cvtColor(fplan, cv2.COLOR_BGR2RGB)
+            original_shape = fplan.shape[:2] # H, W
+            
+            # Normalize [-1, 1]
+            img_norm = 2 * (fplan / 255.0) - 1
+            img_norm = np.moveaxis(img_norm, -1, 0) # HWC -> CHW
+            input_tensor = torch.tensor(img_norm).float().unsqueeze(0)
 
+            # 2. Load Model (Direct Instantiation)
+            print("Initializing model architecture...")
+            model = hg_furukawa_original(44)
+            
+            print(f"Loading weights from {self.model_path}...")
+            checkpoint = torch.load(self.model_path, map_location='cpu')
+            if 'model_state' in checkpoint:
+                state_dict = checkpoint['model_state']
+            else:
+                state_dict = checkpoint
+            model.load_state_dict(state_dict)
+            
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            model.to(device)
+            input_tensor = input_tensor.to(device)
+            model.eval()
 
+            # 3. Inference
+            print("Running model inference...")
+            with torch.no_grad():
+                pred = model(input_tensor)
 
-# ----------------- Main Application Window -----------------
-class MainWindow(QMainWindow):
+            # 4. Post-processing
+            print("Processing output layers...")
+            height, width = original_shape
+            pred_np = pred.cpu().numpy()[0]
+            
+            # --- Helper to create transparent RGBA overlay ---
+            def create_overlay(segmentation_map, colors, start_idx=1):
+                # Initialize RGBA image (Height, Width, 4) with zeros (transparent)
+                overlay = np.zeros((segmentation_map.shape[0], segmentation_map.shape[1], 4), dtype=np.uint8)
+                
+                # Loop through classes
+                for i in range(start_idx, len(colors)):
+                    # Check bounds just in case
+                    if i >= len(colors): break
+                        
+                    mask = (segmentation_map == i)
+                    if np.any(mask):
+                        # Set RGB color
+                        overlay[mask, 0:3] = colors[i]
+                        # Set Alpha (Transparency)
+                        overlay[mask, 3] = 140 
+                
+                # Resize to match original image
+                overlay = cv2.resize(overlay, (width, height), interpolation=cv2.INTER_NEAREST)
+                return overlay
+
+            # Retrieve consistent colors
+            room_colors, icon_colors = get_class_colors()
+
+            # A. ROOMS
+            room_pred = pred_np[21:33]
+            room_seg = np.argmax(room_pred, axis=0)
+            room_layer = create_overlay(room_seg, room_colors, start_idx=1)
+
+            # B. ITEMS (Icons)
+            icon_pred = pred_np[33:44]
+            icon_seg = np.argmax(icon_pred, axis=0)
+            item_layer = create_overlay(icon_seg, icon_colors, start_idx=1)
+
+            # 5. Save Layers
+            base_name = os.path.splitext(os.path.basename(self.image_path))[0]
+            room_path = f"temp_{base_name}_rooms.png"
+            item_path = f"temp_{base_name}_items.png"
+            
+            cv2.imwrite(room_path, cv2.cvtColor(room_layer, cv2.COLOR_RGBA2BGRA))
+            cv2.imwrite(item_path, cv2.cvtColor(item_layer, cv2.COLOR_RGBA2BGRA))
+            
+            print(f"Layers saved: {room_path}, {item_path}")
+            self.finished.emit(room_path, item_path)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.error.emit(str(e))
+
+# ----------------- UI Components -----------------
+
+class LegendWidget(QWidget):
+    """
+    Displays color keys for Rooms and Icons.
+    """
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Document Viewer with Chatbot")
-        self.setGeometry(100, 100, 1400, 900)
-        self.setWindowIcon(self._create_default_icon())
+        self.layout = QVBoxLayout(self)
+        self.layout.setAlignment(Qt.AlignTop)
+        
+        # We will regenerate the labels dynamically
+        self.room_colors, self.icon_colors = get_class_colors()
+        
+        self.room_container = QWidget()
+        self.room_layout = QVBoxLayout(self.room_container)
+        self.room_layout.setContentsMargins(0,0,0,0)
+        self.layout.addWidget(QLabel("<b>Rooms</b>"))
+        self.layout.addWidget(self.room_container)
+        
+        self.item_container = QWidget()
+        self.item_layout = QVBoxLayout(self.item_container)
+        self.item_layout.setContentsMargins(0,0,0,0)
+        self.layout.addWidget(QLabel("<b>Items</b>"))
+        self.layout.addWidget(self.item_container)
 
-        self.tab_widget = QTabWidget()
-        self.tab_widget.setTabsClosable(True)
-        self.tab_widget.setMovable(True)
-        self.tab_widget.tabCloseRequested.connect(self.close_tab)
-        self.setCentralWidget(self.tab_widget)
+        # Populate
+        self.populate_legend(self.room_layout, ROOM_CLASSES, self.room_colors)
+        self.populate_legend(self.item_layout, ICON_CLASSES, self.icon_colors)
+        
+        # Initial state hidden
+        self.room_container.setVisible(False)
+        self.item_container.setVisible(False)
 
-        add_button = QPushButton("+")
-        add_button.setFixedSize(26, 26)
-        add_button.setStyleSheet("""
-            QPushButton { font-size: 18px; font-weight: bold; border-radius: 2px; }
-            QPushButton:hover { background-color: #2b2c37; }
-        """)
-        add_button.clicked.connect(self.open_file)
-        button_container = QWidget()
-        button_layout = QHBoxLayout(button_container)
-        button_layout.setContentsMargins(0, 0, 0, 0)
-        button_layout.addWidget(add_button); button_layout.addStretch()
-        self.tab_widget.setCornerWidget(button_container, Qt.TopRightCorner)
+    def populate_legend(self, layout, classes, colors):
+        # Skip index 0 (Background/No Icon)
+        for i in range(1, len(classes)):
+            if i >= len(colors): break
+            
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 2, 0, 2)
+            
+            # Color box
+            color_lbl = QLabel()
+            color_lbl.setFixedSize(20, 20)
+            c = colors[i]
+            # Generate hex string
+            hex_c = f"#{c[0]:02x}{c[1]:02x}{c[2]:02x}"
+            color_lbl.setStyleSheet(f"background-color: {hex_c}; border: 1px solid gray;")
+            
+            # Text label
+            text_lbl = QLabel(classes[i])
+            
+            row_layout.addWidget(color_lbl)
+            row_layout.addWidget(text_lbl)
+            row_layout.addStretch()
+            
+            layout.addWidget(row)
 
-        self.show_welcome_tab()
+    def set_visibility(self, show_rooms, show_items):
+        self.room_container.setVisible(show_rooms)
+        self.item_container.setVisible(show_items)
 
-    def _create_default_icon(self):
-        pixmap = QPixmap(16, 16)
-        pixmap.fill(Qt.transparent)
-        from PySide6.QtGui import QPainter, QColor
-        painter = QPainter(pixmap)
-        painter.setBrush(QColor("lightblue")); painter.setPen(Qt.NoPen)
-        painter.drawRect(3, 1, 10, 14)
-        painter.setBrush(QColor("white")); painter.drawRect(5, 3, 6, 4)
-        painter.setBrush(QColor("lightgrey")); painter.drawRect(5, 9, 6, 1)
-        painter.drawRect(5, 11, 6, 1); painter.end()
-        return QIcon(pixmap)
-
-    def open_file(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Open File", "",
-            "All Supported Files (*.pdf *.png *.jpg *.jpeg *.bmp *.gif);;PDF Files (*.pdf);;Image Files (*.png *.jpg *.jpeg *.bmp *.gif)"
-        )
-        if file_path:
-            if self.tab_widget.count() == 1 and self.tab_widget.widget(0).objectName() == "welcome_tab":
-                self.tab_widget.removeTab(0)
-            viewer = DocumentViewer(file_path)
-            file_name = file_path.split('/')[-1]
-            self.tab_widget.addTab(viewer, file_name)
-            self.tab_widget.setCurrentWidget(viewer)
-
-    def close_tab(self, index):
-        widget = self.tab_widget.widget(index)
-        if widget is not None:
-            widget.deleteLater()
-        self.tab_widget.removeTab(index)
-        if self.tab_widget.count() == 0:
-            self.show_welcome_tab()
-
-    def show_welcome_tab(self):
-        welcome_widget = QWidget()
-        welcome_widget.setObjectName("welcome_tab")
-        layout = QVBoxLayout(welcome_widget); layout.setAlignment(Qt.AlignCenter)
-        title = QLabel("Document Viewer"); title.setStyleSheet("font-size: 32px; font-weight: bold;")
-        subtitle = QLabel("Press the <b>+</b> button to load a PDF or image.")
-        subtitle.setStyleSheet("font-size: 16px;")
-        layout.addWidget(title); layout.addWidget(subtitle)
-        self.tab_widget.addTab(welcome_widget, "Welcome")
-        self.tab_widget.tabBar().setTabButton(0, QTabBar.RightSide, None)
-
-
-# ----------------- Document Viewer + Chatbot per-tab -----------------
 class DocumentViewer(QWidget):
+    """
+    Displays an image and supports layering overlays (Rooms/Items).
+    """
     def __init__(self, file_path):
         super().__init__()
+        self.layout = QVBoxLayout(self)
+        self.scroll_area = QScrollArea()
+        self.label = QLabel()
+        self.label.setAlignment(Qt.AlignCenter)
+        
+        self.scroll_area.setWidget(self.label)
+        self.scroll_area.setWidgetResizable(True)
+        self.layout.addWidget(self.scroll_area)
+        
         self.file_path = file_path
-        self.pdf_document = None
-        self.image_item = None
-        self.thumbnail_labels = []
-        self.current_page = 0
+        
+        # Image Layers
+        self.original_pixmap = None
+        self.room_pixmap = None
+        self.item_pixmap = None
+        
+        # View State
+        self.show_rooms = False
+        self.show_items = False
         self.zoom_level = 1.0
-        self._initial_fit_done = False
+        self.has_analysis_data = False
+        
+        self.load_base_image()
 
-        # RAG related
-        self.indexed_chunks = []
-        self.indexed = False
-
-        main_layout = QHBoxLayout(self); main_layout.setContentsMargins(0, 0, 0, 0)
-        splitter = QSplitter(Qt.Horizontal); main_layout.addWidget(splitter)
-
-        # Left: thumbnails
-        self.thumbnail_scroll_area = QScrollArea(); self.thumbnail_scroll_area.setWidgetResizable(True)
-        self.thumbnail_scroll_area.setObjectName("thumbnailScrollArea")
-        self.thumbnail_widget = QWidget(); self.thumbnail_layout = QVBoxLayout(self.thumbnail_widget)
-        self.thumbnail_layout.setAlignment(Qt.AlignTop); self.thumbnail_scroll_area.setWidget(self.thumbnail_widget)
-        self.thumbnail_scroll_area.setMinimumWidth(150); self.thumbnail_scroll_area.setMaximumWidth(250)
-
-        # Center: main view
-        self.main_view_scroll_area = QScrollArea(); self.main_view_scroll_area.setObjectName("mainViewScrollArea")
-        self.main_view_label = QLabel(); self.main_view_label.setAlignment(Qt.AlignCenter)
-        self.main_view_scroll_area.setWidget(self.main_view_label)
-        self.main_view_scroll_area.viewport().installEventFilter(self)
-
-        center_container = QWidget(); center_layout = QVBoxLayout(center_container)
-        center_layout.addWidget(self.main_view_scroll_area)
-
-        # Right: chatbot
-        self.chat_widget = self._create_chat_widget()
-        self.chat_widget.setMinimumWidth(360); self.chat_widget.setMaximumWidth(520)
-
-        splitter.addWidget(self.thumbnail_scroll_area)
-        splitter.addWidget(center_container)
-        splitter.addWidget(self.chat_widget)
-        splitter.setSizes([150, 900, 350])
-
-        self.load_document()
-
-    def _create_chat_widget(self):
-        w = QWidget()
-        layout = QVBoxLayout(w)
-        layout.setContentsMargins(8, 8, 8, 8)
-        title = QLabel("Document Chatbot (Llava)")
-        title.setStyleSheet("font-weight: bold; font-size: 16px;")
-        layout.addWidget(title)
-
-        # Indexing button
-        index_btn = QPushButton("Index Document (for RAG)")
-        index_btn.clicked.connect(self.index_document)
-        layout.addWidget(index_btn)
-
-        # Chat history
-        self.chat_history = QTextEdit(); self.chat_history.setReadOnly(True)
-        layout.addWidget(self.chat_history, 1)
-
-        # Input + send
-        h = QHBoxLayout()
-        self.chat_input = QLineEdit(); self.chat_input.setPlaceholderText("Ask a question about the document...")
-        send_btn = QPushButton("Send")
-        send_btn.clicked.connect(self.on_send_clicked)
-        h.addWidget(self.chat_input); h.addWidget(send_btn)
-        layout.addLayout(h)
-
-        return w
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if not self._initial_fit_done:
-            self.fit_to_width()
-            self._initial_fit_done = True
-
-    def eventFilter(self, source, event):
-        if source == self.main_view_scroll_area.viewport() and event.type() == QEvent.Type.Wheel:
-            if isinstance(event, QWheelEvent):
-                if QApplication.keyboardModifiers() == Qt.KeyboardModifier.ControlModifier:
-                    mouse_pos_viewport = event.position()
-                    h_bar = self.main_view_scroll_area.horizontalScrollBar()
-                    v_bar = self.main_view_scroll_area.verticalScrollBar()
-                    scene_x = (h_bar.value() + mouse_pos_viewport.x()) / self.zoom_level
-                    scene_y = (v_bar.value() + mouse_pos_viewport.y()) / self.zoom_level
-                    angle = event.angleDelta().y()
-                    zoom_factor = 1.001 ** angle
-                    self.zoom_level *= zoom_factor
-                    self.update_display()
-                    new_pixel_x = scene_x * self.zoom_level
-                    new_pixel_y = scene_y * self.zoom_level
-                    h_bar.setValue(int(new_pixel_x - mouse_pos_viewport.x()))
-                    v_bar.setValue(int(new_pixel_y - mouse_pos_viewport.y()))
-                    return True
-        return super().eventFilter(source, event)
-
-    def fit_to_width(self):
-        viewport_width = self.main_view_scroll_area.viewport().width()
-        if viewport_width <= 0: return
-        if self.pdf_document and len(self.pdf_document) > 0:
-            page = self.pdf_document.load_page(self.current_page)
-            if page.rect.width > 0:
-                self.zoom_level = viewport_width / page.rect.width
-                self.update_display()
-        elif self.image_item:
-            if self.image_item.width > 0:
-                self.zoom_level = viewport_width / self.image_item.width
-                self.update_display()
-
-    def update_display(self):
-        if self.pdf_document:
-            self.show_page(self.current_page)
-        elif self.image_item:
-            self.display_image()
-
-    def load_document(self):
-        if self.file_path.lower().endswith('.pdf'):
-            self.load_pdf()
-        else:
-            self.load_image()
-
-    def load_pdf(self):
+    def load_base_image(self):
         try:
-            self.pdf_document = fitz.open(self.file_path)
-            for page_num in range(len(self.pdf_document)):
-                page = self.pdf_document.load_page(page_num)
-                pix = page.get_pixmap(dpi=36)
-                q_image = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
-                thumb_label = QLabel()
-                thumb_label.setPixmap(QPixmap.fromImage(q_image).scaledToWidth(120, Qt.TransformationMode.SmoothTransformation))
-                thumb_label.setFrameShape(QFrame.Shape.StyledPanel)
-                thumb_label.mousePressEvent = lambda event, p=page_num: self.show_page(p)
-                self.thumbnail_layout.addWidget(thumb_label); self.thumbnail_labels.append(thumb_label)
-            if len(self.pdf_document) > 0: self.show_page(0)
-        except Exception as e:
-            self.main_view_label.setText(f"Error loading PDF: {e}")
-
-    def load_image(self):
-        try:
-            self.image_item = Image.open(self.file_path)
-            thumb_pixmap = QPixmap(self.file_path).scaledToWidth(120, Qt.TransformationMode.SmoothTransformation)
-            thumb_label = QLabel(); thumb_label.setPixmap(thumb_pixmap)
-            thumb_label.setFrameShape(QFrame.Shape.StyledPanel)
-            self.thumbnail_layout.addWidget(thumb_label); self.thumbnail_labels.append(thumb_label)
-            self.display_image()
-        except Exception as e:
-            self.main_view_label.setText(f"Error loading image: {e}")
-
-    def display_image(self):
-        if not self.image_item: return
-        pixmap = QPixmap(self.file_path)
-        new_width = int(pixmap.width() * self.zoom_level)
-        scaled_pixmap = pixmap.scaledToWidth(new_width, Qt.TransformationMode.SmoothTransformation)
-        self.main_view_label.setPixmap(scaled_pixmap)
-        self.main_view_label.resize(scaled_pixmap.size())
-        self.highlight_thumbnail(0)
-
-    def show_page(self, page_num):
-        if not self.pdf_document: return
-        self.current_page = page_num
-        page = self.pdf_document.load_page(page_num)
-        matrix = fitz.Matrix(self.zoom_level, self.zoom_level)
-        pix = page.get_pixmap(matrix=matrix, alpha=False)
-        q_image = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
-        pixmap = QPixmap.fromImage(q_image)
-        self.main_view_label.setPixmap(pixmap)
-        self.main_view_label.resize(pixmap.size())
-        self.highlight_thumbnail(page_num)
-
-    def highlight_thumbnail(self, index):
-        for i, label in enumerate(self.thumbnail_labels):
-            if i == index: label.setStyleSheet("border: 2px solid #0078d4;")
-            else: label.setStyleSheet("")
-
-    # ----------------- RAG: indexing -----------------
-    def index_document(self):
-        """Extracts text from the opened document and chunks it for retrieval."""
-        self.chat_history.append("[System] Indexing document...")
-        if self.file_path.lower().endswith('.pdf'):
-            text = extract_text_from_pdf(self.file_path)
-        else:
-            text = ocr_image(self.file_path)
-            if text:
-                self.chat_history.append(f"[System] OCR extracted text (truncated): {text[:200]}...")
+            self.original_pixmap = QPixmap(self.file_path)
+            if self.original_pixmap.isNull():
+                self.label.setText("Failed to load image.")
             else:
-                self.chat_history.append("[System] OCR (pytesseract) found no text.")
+                self.update_view()
+        except Exception as e:
+            self.label.setText(f"Error: {e}")
+
+    def set_overlays(self, room_path, item_path):
+        """Loads the analysis result layers."""
+        self.room_pixmap = QPixmap(room_path)
+        self.item_pixmap = QPixmap(item_path)
+        self.has_analysis_data = True
+        self.update_view()
+
+    def toggle_layers(self, show_rooms, show_items):
+        self.show_rooms = show_rooms
+        self.show_items = show_items
+        self.update_view()
+
+    def update_view(self):
+        if not self.original_pixmap:
+            return
+
+        # 1. Start with original image
+        final_pixmap = QPixmap(self.original_pixmap)
+        
+        # 2. Create a painter to draw overlays
+        painter = QPainter(final_pixmap)
+        
+        # 3. Draw Rooms if enabled
+        if self.show_rooms and self.room_pixmap:
+            painter.drawPixmap(0, 0, self.room_pixmap)
+            
+        # 4. Draw Items if enabled
+        if self.show_items and self.item_pixmap:
+            painter.drawPixmap(0, 0, self.item_pixmap)
+            
+        painter.end()
+
+        # 5. Apply Zoom
+        if self.zoom_level != 1.0:
+            scaled = final_pixmap.scaled(
+                final_pixmap.size() * self.zoom_level,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            )
+            self.label.setPixmap(scaled)
+        else:
+            self.label.setPixmap(final_pixmap)
+
+    def wheelEvent(self, event: QWheelEvent):
+        if event.modifiers() & Qt.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self.zoom_level *= 1.1
+            else:
+                self.zoom_level /= 1.1
+            self.update_view()
+            event.accept()
+        else:
+            super().wheelEvent(event)
+
+class PDFViewerApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("CubiCasa5k Viewer")
+        self.resize(1400, 900)
+
+        self.current_pdf_path = None
+        self.temp_files = [] 
+
+        # Main UI
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+        layout = QHBoxLayout(main_widget)
+
+        # Sidebar (Thumbnails)
+        self.thumbnail_scroll = QScrollArea()
+        self.thumbnail_scroll.setFixedWidth(200)
+        self.thumbnail_scroll.setWidgetResizable(True)
+        self.thumbnail_content = QWidget()
+        self.thumbnail_layout = QVBoxLayout(self.thumbnail_content)
+        self.thumbnail_layout.setAlignment(Qt.AlignTop)
+        self.thumbnail_scroll.setWidget(self.thumbnail_content)
+        
+        # Main Content Area (Tabs)
+        self.tabs = QTabWidget()
+        self.tabs.setTabsClosable(True)
+        self.tabs.tabCloseRequested.connect(self.close_tab)
+        self.tabs.currentChanged.connect(self.update_toolbar_state)
+
+        # Legend (Right side)
+        self.legend_scroll = QScrollArea()
+        self.legend_scroll.setFixedWidth(220)
+        self.legend_scroll.setWidgetResizable(True)
+        self.legend = LegendWidget()
+        self.legend_scroll.setWidget(self.legend)
+
+        # Toolbar / Controls
+        controls = QWidget()
+        control_layout = QVBoxLayout(controls)
+        
+        btn_open = QPushButton("Open PDF/Image")
+        btn_open.clicked.connect(self.open_file)
+        
+        # --- Toggle Buttons ---
+        self.btn_rooms = QPushButton("Room Segmentation")
+        self.btn_rooms.setCheckable(True)
+        self.btn_rooms.clicked.connect(self.on_toggle_rooms)
+        self.btn_rooms.setEnabled(False)
+        
+        self.btn_items = QPushButton("Item Segmentation")
+        self.btn_items.setCheckable(True)
+        self.btn_items.clicked.connect(self.on_toggle_items)
+        self.btn_items.setEnabled(False)
+
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color: gray; font-style: italic;")
+
+        control_layout.addWidget(btn_open)
+        control_layout.addSpacing(20)
+        control_layout.addWidget(self.btn_rooms)
+        control_layout.addWidget(self.btn_items)
+        control_layout.addWidget(self.status_label)
+        control_layout.addStretch()
+
+        # Add to main layout
+        layout.addWidget(controls)
+        layout.addWidget(self.thumbnail_scroll)
+        layout.addWidget(self.tabs)
+        layout.addWidget(self.legend_scroll) # Add Legend
+        
+        self.worker = None
+
+    def open_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Open File", "", "PDF Files (*.pdf);;Images (*.png *.jpg *.jpeg)")
+        if path:
+            if path.lower().endswith('.pdf'):
+                self.load_pdf(path)
+            else:
+                self.load_single_image(path)
+
+    def load_single_image(self, path):
+        self.add_viewer_tab(path, "Image")
+        self.clear_layout(self.thumbnail_layout)
+
+    def load_pdf(self, path):
+        self.current_pdf_path = path
+        self.clear_layout(self.thumbnail_layout)
+        try:
+            doc = fitz.open(path)
+            for i in range(len(doc)):
+                page = doc.load_page(i)
+                pix = page.get_pixmap(matrix=fitz.Matrix(0.2, 0.2))
+                img_data = pix.tobytes("ppm")
+                qimg = QImage.fromData(img_data)
+                pixmap = QPixmap.fromImage(qimg)
                 
-            if not text:
-                text = f"(No OCR available) File: {self.file_path}\n" + ""
-        
-        if not text.strip() or text.startswith("(No OCR available)"):
-            self.chat_history.append("[System] No text could be extracted or indexed.")
-            self.indexed_chunks = []
-            self.indexed = False
-            return
-        chunks = chunk_text(text, max_chars=1400, overlap=200)
-        self.indexed_chunks = chunks
-        self.indexed = True
-        self.chat_history.append(f"[System] Document indexed into {len(chunks)} chunks.")
+                btn = QPushButton()
+                btn.setIcon(QIcon(pixmap))
+                btn.setIconSize(pixmap.size())
+                btn.setFixedSize(pixmap.size())
+                btn.clicked.connect(lambda checked, p=i: self.load_pdf_page(p))
+                
+                self.thumbnail_layout.addWidget(btn)
+                self.thumbnail_layout.addWidget(QLabel(f"Page {i+1}"))
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not load PDF: {e}")
 
-    # ----------------- Chat interaction -----------------
-    def on_send_clicked(self):
-        q = self.chat_input.text().strip()
-        if not q:
-            return
-        self.chat_input.clear()
-        self.chat_history.append(f"You: {q}")
-        # Run retrieval + model call in a separate thread to keep UI responsive
-        thread = threading.Thread(target=self._process_question, args=(q,))
-        thread.start()
+    def load_pdf_page(self, page_num):
+        if not self.current_pdf_path: return
+        doc = fitz.open(self.current_pdf_path)
+        page = doc.load_page(page_num)
+        pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+        temp_path = f"temp_page_{page_num}.png"
+        pix.save(temp_path)
+        self.temp_files.append(temp_path)
+        self.add_viewer_tab(temp_path, f"Page {page_num+1}")
 
-    def _process_question(self, question):
-        is_pdf = self.file_path.lower().endswith('.pdf')
-        
-        if is_pdf:
-            # --- RAG Logic for PDFs ---
+    def add_viewer_tab(self, image_path, title):
+        viewer = DocumentViewer(image_path)
+        self.tabs.addTab(viewer, title)
+        self.tabs.setCurrentWidget(viewer)
+        self.update_toolbar_state()
+
+    def update_toolbar_state(self):
+        """Updates button states and legend based on current tab."""
+        viewer = self.tabs.currentWidget()
+        if isinstance(viewer, DocumentViewer):
+            # Enable buttons
+            self.btn_rooms.setEnabled(True)
+            self.btn_items.setEnabled(True)
             
-            # If not indexed, attempt to index automatically
-            if not self.indexed:
-                self.chat_history.append("[System] Document not indexed yet — attempting automatic indexing...")
-                self.index_document()
-                if not self.indexed:
-                    self.chat_history.append("[System] Indexing failed. Cannot answer from document.")
-                    return
-
-            # Retrieve top chunks
-            top = retrieve_top_chunks(self.indexed_chunks, question, top_k=4)
-            if not top:
-                # No matches — still call llava but warn user
-                context = ""
-                self.chat_history.append("[System] No strongly relevant passages found; answering without document context.")
+            # Sync states
+            self.btn_rooms.blockSignals(True)
+            self.btn_items.blockSignals(True)
+            self.btn_rooms.setChecked(viewer.show_rooms)
+            self.btn_items.setChecked(viewer.show_items)
+            self.btn_rooms.blockSignals(False)
+            self.btn_items.blockSignals(False)
+            
+            # Update Legend
+            self.legend.set_visibility(viewer.show_rooms, viewer.show_items)
+            
+            if viewer.has_analysis_data:
+                self.status_label.setText("Analysis Ready")
             else:
-                context = "\n\n---\n\n".join(top)
-
-            # Build a prompt that instructs the model to use the context.
-            prompt = (
-                "You are a helpful assistant. Use the provided document context to answer the question.\n"
-                "If the answer is not contained in the context, say you don't know instead of making up facts.\n\n"
-                "Context:\n" + context + "\n\nQuestion: " + question + "\n\nAnswer:"
-            )
-
-            self.chat_history.append("[System] Sending prompt to llava (ollama)...")
-            # Call llava WITHOUT an image path (text-only RAG)
-            response = call_ollama_llava(prompt, timeout=60)
-            
+                self.status_label.setText("Ready to Analyze")
         else:
-            # --- VQA Logic for Images ---
-            # We bypass RAG and send the image path directly to llava
+            self.btn_rooms.setEnabled(False)
+            self.btn_items.setEnabled(False)
+            self.status_label.setText("")
+            self.legend.set_visibility(False, False)
+
+    def close_tab(self, index):
+        self.tabs.removeTab(index)
+        self.update_toolbar_state()
+
+    def clear_layout(self, layout):
+        while layout.count():
+            child = layout.takeAt(0)
+            if child.widget(): child.widget().deleteLater()
+
+    # --- Toggle Logic ---
+
+    def on_toggle_rooms(self):
+        self.handle_toggle()
+
+    def on_toggle_items(self):
+        self.handle_toggle()
+
+    def handle_toggle(self):
+        viewer = self.tabs.currentWidget()
+        if not isinstance(viewer, DocumentViewer):
+            return
+
+        rooms_checked = self.btn_rooms.isChecked()
+        items_checked = self.btn_items.isChecked()
+
+        # If analysis not done yet, run it first
+        if not viewer.has_analysis_data:
+            # Disable controls while running
+            self.btn_rooms.setEnabled(False)
+            self.btn_items.setEnabled(False)
+            self.status_label.setText("Analyzing...")
             
-            prompt = (
-                "You are a helpful visual assistant. Look at the image and answer the question.\n\n"
-                "Question: " + question + "\n\nAnswer:"
-            )
+            self.worker = CubiCasaWorker(viewer.file_path)
+            self.worker.finished.connect(self.on_analysis_finished)
+            self.worker.error.connect(self.on_analysis_error)
+            self.worker.start()
+        else:
+            # Just update visibility
+            viewer.toggle_layers(rooms_checked, items_checked)
+            self.legend.set_visibility(rooms_checked, items_checked)
 
-            self.chat_history.append(f"[System] Sending prompt and image to llava (ollama)...")
-            # Call llava WITH the image path
-            response = call_ollama_llava(prompt, image_path=self.file_path, timeout=60)
+    @Slot(str, str)
+    def on_analysis_finished(self, room_path, item_path):
+        viewer = self.tabs.currentWidget()
+        if isinstance(viewer, DocumentViewer):
+            viewer.set_overlays(room_path, item_path)
+            
+            # Apply the requested toggle state
+            rooms_checked = self.btn_rooms.isChecked()
+            items_checked = self.btn_items.isChecked()
+            viewer.toggle_layers(rooms_checked, items_checked)
+            self.legend.set_visibility(rooms_checked, items_checked)
+            
+            self.temp_files.extend([room_path, item_path])
 
-        # Append the model's response
-        self.chat_history.append(f"llava: {response}")
+        self.btn_rooms.setEnabled(True)
+        self.btn_items.setEnabled(True)
+        self.status_label.setText("Analysis Complete")
+        QMessageBox.information(self, "Success", "Analysis complete. Toggles are now active.")
 
+    @Slot(str)
+    def on_analysis_error(self, err_msg):
+        self.btn_rooms.setEnabled(True)
+        self.btn_items.setEnabled(True)
+        self.btn_rooms.setChecked(False)
+        self.btn_items.setChecked(False)
+        self.status_label.setText("Analysis Failed")
+        QMessageBox.critical(self, "Analysis Error", err_msg)
+
+    def closeEvent(self, event):
+        for f in self.temp_files:
+            if os.path.exists(f):
+                try: os.remove(f)
+                except: pass
+        super().closeEvent(event)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     try:
         with open("style.qss", "r") as f:
             app.setStyleSheet(f.read())
-    except FileNotFoundError:
-        print("Stylesheet file 'style.qss' not found. Using default styles.")
-
-    main_win = MainWindow()
-    main_win.show()
+    except:
+        pass
+    window = PDFViewerApp()
+    window.show()
     sys.exit(app.exec())
