@@ -4,6 +4,7 @@ import threading
 import subprocess
 import re
 import inspect
+import json  # Added for data export
 from collections import Counter
 
 import fitz  # PyMuPDF
@@ -26,6 +27,8 @@ try:
     import torch
     import torch.nn as nn
     from floortrans.models.hg_furukawa_original import hg_furukawa_original
+    # NEW: Import native contour extraction tools
+    from floortrans.post_prosessing import split_prediction, get_polygons
 except ImportError as e:
     print(f"Error importing CubiCasa modules: {e}")
     print("Ensure main.py is running from the root of the CubiCasa5k repository.")
@@ -81,8 +84,10 @@ class CubiCasaWorker(QThread):
     """
     Background thread to run CubiCasa5k inference.
     Generates separate transparent layers for Rooms and Items.
+    Also extracts contours (polygons) for BOQ generation.
     """
-    finished = Signal(str, str)  # Emits (room_layer_path, item_layer_path)
+    # Update signal to include JSON data path
+    finished = Signal(str, str, str)  # (room_layer_path, item_layer_path, json_data_path)
     error = Signal(str)
 
     def __init__(self, image_path, model_path="model_best_val_loss_var.pkl"):
@@ -110,13 +115,14 @@ class CubiCasaWorker(QThread):
                 
             fplan = cv2.cvtColor(fplan, cv2.COLOR_BGR2RGB)
             original_shape = fplan.shape[:2] # H, W
+            height, width = original_shape
             
             # Normalize [-1, 1]
             img_norm = 2 * (fplan / 255.0) - 1
             img_norm = np.moveaxis(img_norm, -1, 0) # HWC -> CHW
             input_tensor = torch.tensor(img_norm).float().unsqueeze(0)
 
-            # 2. Load Model (Direct Instantiation)
+            # 2. Load Model
             print("Initializing model architecture...")
             model = hg_furukawa_original(44)
             
@@ -138,55 +144,123 @@ class CubiCasaWorker(QThread):
             with torch.no_grad():
                 pred = model(input_tensor)
 
-            # 4. Post-processing
-            print("Processing output layers...")
-            height, width = original_shape
+            # 4. Post-processing (Visual Layers)
+            print("Processing visual output layers...")
             pred_np = pred.cpu().numpy()[0]
             
             # --- Helper to create transparent RGBA overlay ---
             def create_overlay(segmentation_map, colors, start_idx=1):
-                # Initialize RGBA image (Height, Width, 4) with zeros (transparent)
                 overlay = np.zeros((segmentation_map.shape[0], segmentation_map.shape[1], 4), dtype=np.uint8)
-                
-                # Loop through classes
                 for i in range(start_idx, len(colors)):
-                    # Check bounds just in case
                     if i >= len(colors): break
-                        
                     mask = (segmentation_map == i)
                     if np.any(mask):
-                        # Set RGB color
                         overlay[mask, 0:3] = colors[i]
-                        # Set Alpha (Transparency)
                         overlay[mask, 3] = 140 
-                
-                # Resize to match original image
                 overlay = cv2.resize(overlay, (width, height), interpolation=cv2.INTER_NEAREST)
                 return overlay
 
-            # Retrieve consistent colors
             room_colors, icon_colors = get_class_colors()
 
-            # A. ROOMS
+            # Rooms
             room_pred = pred_np[21:33]
             room_seg = np.argmax(room_pred, axis=0)
             room_layer = create_overlay(room_seg, room_colors, start_idx=1)
 
-            # B. ITEMS (Icons)
+            # Items
             icon_pred = pred_np[33:44]
             icon_seg = np.argmax(icon_pred, axis=0)
             item_layer = create_overlay(icon_seg, icon_colors, start_idx=1)
 
-            # 5. Save Layers
+            # 5. Contour Extraction (The Logic Layer for BOQ)
+            print("Extracting contours (Polygons) for BOQ...")
+            boq_data = {"rooms": [], "icons": []}
+
+            try:
+                # A. Use Native CubiCasa functions if possible
+                # split_prediction separates the tensor into heatmaps, rooms, and icons
+                # get_polygons converts these heatmaps into vector coordinates
+                heatmaps, rooms, icons = split_prediction(pred)
+                pol_rooms, pol_icons = get_polygons((heatmaps, rooms, icons), 0.2, [height, width])
+                
+                # Structure Room Data
+                # pol_rooms is typically [class_index, points_array]
+                for poly in pol_rooms:
+                    class_idx = int(poly[0])
+                    points = poly[1]
+                    label_name = ROOM_CLASSES[class_idx] if 0 <= class_idx < len(ROOM_CLASSES) else "Unknown"
+                    
+                    # Calculate Area (Simple polygon area)
+                    # This area is in Pixels. You need a scale factor to get Meters.
+                    area_px = 0.5 * np.abs(np.dot(points[:, 0], np.roll(points[:, 1], 1)) - np.dot(points[:, 1], np.roll(points[:, 0], 1)))
+                    
+                    boq_data["rooms"].append({
+                        "class_id": class_idx,
+                        "label": label_name,
+                        "area_pixels": float(area_px),
+                        "points": points.tolist() # Convert numpy to list for JSON
+                    })
+
+                # Structure Icon Data
+                for poly in pol_icons:
+                    class_idx = int(poly[0])
+                    points = poly[1]
+                    label_name = ICON_CLASSES[class_idx] if 0 <= class_idx < len(ICON_CLASSES) else "Unknown"
+                    
+                    boq_data["icons"].append({
+                        "class_id": class_idx,
+                        "label": label_name,
+                        "points": points.tolist()
+                    })
+                    
+            except Exception as e:
+                print(f"Native polygon extraction failed: {e}. Using OpenCV fallback.")
+                # Fallback: Extract from the segmentation masks we already made
+                # (Robustness measure in case floortrans internal APIs vary)
+                
+                # Process Rooms
+                for i in range(1, len(ROOM_CLASSES)):
+                    mask = ((room_seg == i).astype(np.uint8)) * 255
+                    mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
+                    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    for cnt in contours:
+                        area = cv2.contourArea(cnt)
+                        if area > 100: # Filter noise
+                            boq_data["rooms"].append({
+                                "class_id": i,
+                                "label": ROOM_CLASSES[i],
+                                "area_pixels": float(area),
+                                "points": cnt.squeeze().tolist()
+                            })
+
+                # Process Icons
+                for i in range(1, len(ICON_CLASSES)):
+                    mask = ((icon_seg == i).astype(np.uint8)) * 255
+                    mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
+                    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    for cnt in contours:
+                        boq_data["icons"].append({
+                            "class_id": i,
+                            "label": ICON_CLASSES[i],
+                            "points": cnt.squeeze().tolist()
+                        })
+
+            # 6. Save Outputs
             base_name = os.path.splitext(os.path.basename(self.image_path))[0]
             room_path = f"temp_{base_name}_rooms.png"
             item_path = f"temp_{base_name}_items.png"
+            json_path = f"temp_{base_name}_data.json"
             
             cv2.imwrite(room_path, cv2.cvtColor(room_layer, cv2.COLOR_RGBA2BGRA))
             cv2.imwrite(item_path, cv2.cvtColor(item_layer, cv2.COLOR_RGBA2BGRA))
             
-            print(f"Layers saved: {room_path}, {item_path}")
-            self.finished.emit(room_path, item_path)
+            with open(json_path, 'w') as f:
+                json.dump(boq_data, f, indent=4)
+            
+            print(f"Analysis Saved: {room_path}, {item_path}")
+            print(f"Data JSON Saved: {json_path}")
+            
+            self.finished.emit(room_path, item_path, json_path)
 
         except Exception as e:
             import traceback
@@ -204,7 +278,6 @@ class LegendWidget(QWidget):
         self.layout = QVBoxLayout(self)
         self.layout.setAlignment(Qt.AlignTop)
         
-        # We will regenerate the labels dynamically
         self.room_colors, self.icon_colors = get_class_colors()
         
         self.room_container = QWidget()
@@ -219,38 +292,29 @@ class LegendWidget(QWidget):
         self.layout.addWidget(QLabel("<b>Items</b>"))
         self.layout.addWidget(self.item_container)
 
-        # Populate
         self.populate_legend(self.room_layout, ROOM_CLASSES, self.room_colors)
         self.populate_legend(self.item_layout, ICON_CLASSES, self.icon_colors)
         
-        # Initial state hidden
         self.room_container.setVisible(False)
         self.item_container.setVisible(False)
 
     def populate_legend(self, layout, classes, colors):
-        # Skip index 0 (Background/No Icon)
         for i in range(1, len(classes)):
             if i >= len(colors): break
-            
             row = QWidget()
             row_layout = QHBoxLayout(row)
             row_layout.setContentsMargins(0, 2, 0, 2)
             
-            # Color box
             color_lbl = QLabel()
             color_lbl.setFixedSize(20, 20)
             c = colors[i]
-            # Generate hex string
             hex_c = f"#{c[0]:02x}{c[1]:02x}{c[2]:02x}"
             color_lbl.setStyleSheet(f"background-color: {hex_c}; border: 1px solid gray;")
             
-            # Text label
             text_lbl = QLabel(classes[i])
-            
             row_layout.addWidget(color_lbl)
             row_layout.addWidget(text_lbl)
             row_layout.addStretch()
-            
             layout.addWidget(row)
 
     def set_visibility(self, show_rooms, show_items):
@@ -258,9 +322,6 @@ class LegendWidget(QWidget):
         self.item_container.setVisible(show_items)
 
 class DocumentViewer(QWidget):
-    """
-    Displays an image and supports layering overlays (Rooms/Items).
-    """
     def __init__(self, file_path):
         super().__init__()
         self.layout = QVBoxLayout(self)
@@ -273,18 +334,13 @@ class DocumentViewer(QWidget):
         self.layout.addWidget(self.scroll_area)
         
         self.file_path = file_path
-        
-        # Image Layers
         self.original_pixmap = None
         self.room_pixmap = None
         self.item_pixmap = None
-        
-        # View State
         self.show_rooms = False
         self.show_items = False
         self.zoom_level = 1.0
         self.has_analysis_data = False
-        
         self.load_base_image()
 
     def load_base_image(self):
@@ -298,7 +354,6 @@ class DocumentViewer(QWidget):
             self.label.setText(f"Error: {e}")
 
     def set_overlays(self, room_path, item_path):
-        """Loads the analysis result layers."""
         self.room_pixmap = QPixmap(room_path)
         self.item_pixmap = QPixmap(item_path)
         self.has_analysis_data = True
@@ -310,31 +365,19 @@ class DocumentViewer(QWidget):
         self.update_view()
 
     def update_view(self):
-        if not self.original_pixmap:
-            return
-
-        # 1. Start with original image
+        if not self.original_pixmap: return
         final_pixmap = QPixmap(self.original_pixmap)
-        
-        # 2. Create a painter to draw overlays
         painter = QPainter(final_pixmap)
-        
-        # 3. Draw Rooms if enabled
         if self.show_rooms and self.room_pixmap:
             painter.drawPixmap(0, 0, self.room_pixmap)
-            
-        # 4. Draw Items if enabled
         if self.show_items and self.item_pixmap:
             painter.drawPixmap(0, 0, self.item_pixmap)
-            
         painter.end()
 
-        # 5. Apply Zoom
         if self.zoom_level != 1.0:
             scaled = final_pixmap.scaled(
                 final_pixmap.size() * self.zoom_level,
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation
+                Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
             self.label.setPixmap(scaled)
         else:
@@ -342,11 +385,8 @@ class DocumentViewer(QWidget):
 
     def wheelEvent(self, event: QWheelEvent):
         if event.modifiers() & Qt.ControlModifier:
-            delta = event.angleDelta().y()
-            if delta > 0:
-                self.zoom_level *= 1.1
-            else:
-                self.zoom_level /= 1.1
+            if event.angleDelta().y() > 0: self.zoom_level *= 1.1
+            else: self.zoom_level /= 1.1
             self.update_view()
             event.accept()
         else:
@@ -355,18 +395,16 @@ class DocumentViewer(QWidget):
 class PDFViewerApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("CubiCasa5k Viewer")
+        self.setWindowTitle("CubiCasa5k Viewer + BOQ Extractor")
         self.resize(1400, 900)
-
         self.current_pdf_path = None
         self.temp_files = [] 
 
-        # Main UI
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         layout = QHBoxLayout(main_widget)
 
-        # Sidebar (Thumbnails)
+        # Sidebar
         self.thumbnail_scroll = QScrollArea()
         self.thumbnail_scroll.setFixedWidth(200)
         self.thumbnail_scroll.setWidgetResizable(True)
@@ -375,27 +413,25 @@ class PDFViewerApp(QMainWindow):
         self.thumbnail_layout.setAlignment(Qt.AlignTop)
         self.thumbnail_scroll.setWidget(self.thumbnail_content)
         
-        # Main Content Area (Tabs)
+        # Tabs
         self.tabs = QTabWidget()
         self.tabs.setTabsClosable(True)
         self.tabs.tabCloseRequested.connect(self.close_tab)
         self.tabs.currentChanged.connect(self.update_toolbar_state)
 
-        # Legend (Right side)
+        # Legend
         self.legend_scroll = QScrollArea()
         self.legend_scroll.setFixedWidth(220)
         self.legend_scroll.setWidgetResizable(True)
         self.legend = LegendWidget()
         self.legend_scroll.setWidget(self.legend)
 
-        # Toolbar / Controls
+        # Controls
         controls = QWidget()
         control_layout = QVBoxLayout(controls)
-        
         btn_open = QPushButton("Open PDF/Image")
         btn_open.clicked.connect(self.open_file)
         
-        # --- Toggle Buttons ---
         self.btn_rooms = QPushButton("Room Segmentation")
         self.btn_rooms.setCheckable(True)
         self.btn_rooms.clicked.connect(self.on_toggle_rooms)
@@ -408,6 +444,7 @@ class PDFViewerApp(QMainWindow):
 
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: gray; font-style: italic;")
+        self.status_label.setWordWrap(True)
 
         control_layout.addWidget(btn_open)
         control_layout.addSpacing(20)
@@ -416,21 +453,18 @@ class PDFViewerApp(QMainWindow):
         control_layout.addWidget(self.status_label)
         control_layout.addStretch()
 
-        # Add to main layout
         layout.addWidget(controls)
         layout.addWidget(self.thumbnail_scroll)
         layout.addWidget(self.tabs)
-        layout.addWidget(self.legend_scroll) # Add Legend
+        layout.addWidget(self.legend_scroll)
         
         self.worker = None
 
     def open_file(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Open File", "", "PDF Files (*.pdf);;Images (*.png *.jpg *.jpeg)")
+        path, _ = QFileDialog.getOpenFileName(self, "Open File", "", "PDF/Images (*.pdf *.png *.jpg)")
         if path:
-            if path.lower().endswith('.pdf'):
-                self.load_pdf(path)
-            else:
-                self.load_single_image(path)
+            if path.lower().endswith('.pdf'): self.load_pdf(path)
+            else: self.load_single_image(path)
 
     def load_single_image(self, path):
         self.add_viewer_tab(path, "Image")
@@ -445,8 +479,7 @@ class PDFViewerApp(QMainWindow):
                 page = doc.load_page(i)
                 pix = page.get_pixmap(matrix=fitz.Matrix(0.2, 0.2))
                 img_data = pix.tobytes("ppm")
-                qimg = QImage.fromData(img_data)
-                pixmap = QPixmap.fromImage(qimg)
+                pixmap = QPixmap.fromImage(QImage.fromData(img_data))
                 
                 btn = QPushButton()
                 btn.setIcon(QIcon(pixmap))
@@ -476,33 +509,27 @@ class PDFViewerApp(QMainWindow):
         self.update_toolbar_state()
 
     def update_toolbar_state(self):
-        """Updates button states and legend based on current tab."""
         viewer = self.tabs.currentWidget()
         if isinstance(viewer, DocumentViewer):
-            # Enable buttons
             self.btn_rooms.setEnabled(True)
             self.btn_items.setEnabled(True)
-            
-            # Sync states
             self.btn_rooms.blockSignals(True)
             self.btn_items.blockSignals(True)
             self.btn_rooms.setChecked(viewer.show_rooms)
             self.btn_items.setChecked(viewer.show_items)
             self.btn_rooms.blockSignals(False)
             self.btn_items.blockSignals(False)
-            
-            # Update Legend
             self.legend.set_visibility(viewer.show_rooms, viewer.show_items)
             
             if viewer.has_analysis_data:
-                self.status_label.setText("Analysis Ready")
+                self.status_label.setText("Analysis & Data Ready")
             else:
                 self.status_label.setText("Ready to Analyze")
         else:
             self.btn_rooms.setEnabled(False)
             self.btn_items.setEnabled(False)
-            self.status_label.setText("")
             self.legend.set_visibility(False, False)
+            self.status_label.setText("")
 
     def close_tab(self, index):
         self.tabs.removeTab(index)
@@ -513,56 +540,44 @@ class PDFViewerApp(QMainWindow):
             child = layout.takeAt(0)
             if child.widget(): child.widget().deleteLater()
 
-    # --- Toggle Logic ---
-
-    def on_toggle_rooms(self):
-        self.handle_toggle()
-
-    def on_toggle_items(self):
-        self.handle_toggle()
+    def on_toggle_rooms(self): self.handle_toggle()
+    def on_toggle_items(self): self.handle_toggle()
 
     def handle_toggle(self):
         viewer = self.tabs.currentWidget()
-        if not isinstance(viewer, DocumentViewer):
-            return
+        if not isinstance(viewer, DocumentViewer): return
 
         rooms_checked = self.btn_rooms.isChecked()
         items_checked = self.btn_items.isChecked()
 
-        # If analysis not done yet, run it first
         if not viewer.has_analysis_data:
-            # Disable controls while running
             self.btn_rooms.setEnabled(False)
             self.btn_items.setEnabled(False)
-            self.status_label.setText("Analyzing...")
+            self.status_label.setText("Extracting Contours & Analyzing...")
             
             self.worker = CubiCasaWorker(viewer.file_path)
             self.worker.finished.connect(self.on_analysis_finished)
             self.worker.error.connect(self.on_analysis_error)
             self.worker.start()
         else:
-            # Just update visibility
             viewer.toggle_layers(rooms_checked, items_checked)
             self.legend.set_visibility(rooms_checked, items_checked)
 
-    @Slot(str, str)
-    def on_analysis_finished(self, room_path, item_path):
+    @Slot(str, str, str)
+    def on_analysis_finished(self, room_path, item_path, json_path):
         viewer = self.tabs.currentWidget()
         if isinstance(viewer, DocumentViewer):
             viewer.set_overlays(room_path, item_path)
-            
-            # Apply the requested toggle state
             rooms_checked = self.btn_rooms.isChecked()
             items_checked = self.btn_items.isChecked()
             viewer.toggle_layers(rooms_checked, items_checked)
             self.legend.set_visibility(rooms_checked, items_checked)
-            
-            self.temp_files.extend([room_path, item_path])
+            self.temp_files.extend([room_path, item_path, json_path])
 
         self.btn_rooms.setEnabled(True)
         self.btn_items.setEnabled(True)
-        self.status_label.setText("Analysis Complete")
-        QMessageBox.information(self, "Success", "Analysis complete. Toggles are now active.")
+        self.status_label.setText(f"Analysis Complete.\nData saved to: {os.path.basename(json_path)}")
+        QMessageBox.information(self, "Success", f"Analysis and Contour Extraction complete.\nRaw data saved to {json_path}")
 
     @Slot(str)
     def on_analysis_error(self, err_msg):
