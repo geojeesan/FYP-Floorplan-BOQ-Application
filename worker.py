@@ -176,15 +176,13 @@ class CubiCasaWorker(QThread):
                     points = poly[1]
                     label_name = constants.ROOM_CLASSES[class_idx] if 0 <= class_idx < len(constants.ROOM_CLASSES) else "Unknown"
                     
-                    # Calculate Area (Simple polygon area)
+                    # Calculate pixel area using Shoelace formula
                     area_px = 0.5 * np.abs(np.dot(points[:, 0], np.roll(points[:, 1], 1)) - np.dot(points[:, 1], np.roll(points[:, 0], 1)))
-                    area_units = area_px * (self.scale_ratio ** 2)
                     
                     boq_data["rooms"].append({
                         "class_id": class_idx,
                         "label": label_name,
                         "area_pixels": float(area_px),
-                        "area_units": float(area_units),
                         "points": points.tolist() 
                     })
 

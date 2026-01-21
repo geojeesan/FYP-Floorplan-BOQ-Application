@@ -46,6 +46,7 @@ class PDFViewerApp(QMainWindow):
         self.legend_scroll.setWidgetResizable(True)
         self.legend = LegendWidget()
         self.legend_scroll.setWidget(self.legend)
+        self.legend_scroll.hide()
 
         # Controls
         controls = QWidget()
@@ -156,11 +157,17 @@ class PDFViewerApp(QMainWindow):
             self.btn_rooms.blockSignals(False)
             self.btn_items.blockSignals(False)
             
-            self.legend.set_visibility(viewer.show_rooms, viewer.show_items)
             self.btn_measure.setEnabled(True)
             self.btn_mode_toggle.setEnabled(True)
 
             has_data = len(viewer.current_path) > 0 or len(viewer.completed_shapes) > 0
+
+            if viewer.has_analysis_data:
+                self.legend_scroll.show()
+                # Ensure the legend shows the correct states for the current tab
+                self.legend.set_visibility(True, True) 
+            else:
+                self.legend_scroll.hide()
             
             if viewer.pixel_to_unit_ratio is not None:
                 self.btn_measure.setText("Re-calibrate Scale")
@@ -188,6 +195,7 @@ class PDFViewerApp(QMainWindow):
             self.status_label.setText("")
             self.btn_measure.setEnabled(False)
             self.btn_mode_toggle.setEnabled(False)
+            self.legend_scroll.hide()
 
     def on_measure_clicked(self):
         viewer = self.tabs.currentWidget()
@@ -253,6 +261,8 @@ class PDFViewerApp(QMainWindow):
             viewer.toggle_layers(rooms_checked, items_checked)
             self.legend.set_visibility(rooms_checked, items_checked)
             self.temp_files.extend([room_path, item_path, json_path])
+            self.legend_scroll.show()
+            self.legend.set_visibility(True, True)
 
         self.btn_rooms.setEnabled(True)
         self.btn_items.setEnabled(True)
