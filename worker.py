@@ -38,10 +38,39 @@ class CubiCasaWorker(QThread):
     finished = Signal(str, str, str)  # (room_layer_path, item_layer_path, json_data_path)
     error = Signal(str)
 
-    def __init__(self, image_path, model_path="model_best_val_loss_var.pkl"):
+    def __init__(self, image_path, scale_ratio=1.0, model_path="model_best_val_loss_var.pkl"):
         super().__init__()
         self.image_path = image_path
+        self.scale_ratio = scale_ratio
         self.model_path = model_path
+
+    def snap_to_90(points):
+        """
+        Snaps polygon points to 0, 90, 180, or 270 degrees.
+        Ensures the resulting polygon is 'Manhattan-style'.
+        """
+        if len(points) < 3:
+            return points
+
+        snapped_points = []
+        for i in range(len(points)):
+            p1 = points[i]
+            p2 = points[(i + 1) % len(points)] # Next point (looping)
+            
+            dx = p2[0] - p1[0]
+            dy = p2[1] - p1[1]
+            
+            # Determine if the line is more horizontal or vertical
+            if abs(dx) > abs(dy):
+                # Snap to horizontal: keep y constant
+                snapped_points.append([p1[0], p1[1]])
+                p2[1] = p1[1] 
+            else:
+                # Snap to vertical: keep x constant
+                snapped_points.append([p1[0], p1[1]])
+                p2[0] = p1[0]
+                
+        return np.array(snapped_points)
 
     def run(self):
         if not torch:
@@ -98,14 +127,26 @@ class CubiCasaWorker(QThread):
             
             # --- Helper to create transparent RGBA overlay ---
             def create_overlay(segmentation_map, colors, start_idx=1):
-                overlay = np.zeros((segmentation_map.shape[0], segmentation_map.shape[1], 4), dtype=np.uint8)
+                # Upscale first for better smoothing resolution
+                overlay = np.zeros((height, width, 4), dtype=np.uint8)
+                
                 for i in range(start_idx, len(colors)):
                     if i >= len(colors): break
-                    mask = (segmentation_map == i)
+                    
+                    # Create a binary mask for this class and resize to original image size
+                    mask = (segmentation_map == i).astype(np.uint8) * 255
+                    mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
+                    
+                    # --- SMOOTHING THE VISUAL MASK ---
+                    # 1. Blur the mask to soften edges
+                    mask = cv2.GaussianBlur(mask, (7, 7), 0)
+                    # 2. Re-threshold to sharpen the edges back up but with smoother curves
+                    _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+                    
                     if np.any(mask):
-                        overlay[mask, 0:3] = colors[i]
-                        overlay[mask, 3] = 140 
-                overlay = cv2.resize(overlay, (width, height), interpolation=cv2.INTER_NEAREST)
+                        overlay[mask > 0, 0:3] = colors[i]
+                        overlay[mask > 0, 3] = 140 
+                        
                 return overlay
 
             room_colors, icon_colors = constants.get_class_colors()
@@ -137,11 +178,13 @@ class CubiCasaWorker(QThread):
                     
                     # Calculate Area (Simple polygon area)
                     area_px = 0.5 * np.abs(np.dot(points[:, 0], np.roll(points[:, 1], 1)) - np.dot(points[:, 1], np.roll(points[:, 0], 1)))
+                    area_units = area_px * (self.scale_ratio ** 2)
                     
                     boq_data["rooms"].append({
                         "class_id": class_idx,
                         "label": label_name,
                         "area_pixels": float(area_px),
+                        "area_units": float(area_units),
                         "points": points.tolist() 
                     })
 
@@ -164,15 +207,25 @@ class CubiCasaWorker(QThread):
                 for i in range(1, len(constants.ROOM_CLASSES)):
                     mask = ((room_seg == i).astype(np.uint8)) * 255
                     mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
+                    
+                    # Optional: Morphological Opening to remove small artifacts/noise
+                    kernel = np.ones((5,5), np.uint8)
+                    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+                    
                     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    
                     for cnt in contours:
                         area = cv2.contourArea(cnt)
-                        if area > 100: # Filter noise
+                        if area > 500: 
+                            # Adjust 0.01 to 0.02 for more aggressive smoothing.
+                            epsilon = 0.01 * cv2.arcLength(cnt, True)
+                            approx = cv2.approxPolyDP(cnt, epsilon, True)
+                            
                             boq_data["rooms"].append({
                                 "class_id": i,
                                 "label": constants.ROOM_CLASSES[i],
                                 "area_pixels": float(area),
-                                "points": cnt.squeeze().tolist()
+                                "points": approx.squeeze().tolist()
                             })
 
                 # Process Icons

@@ -4,7 +4,7 @@ import fitz  # PyMuPDF
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QScrollArea, QLabel, QFileDialog, QTabWidget, QPushButton, QMessageBox
+    QScrollArea, QLabel, QFileDialog, QTabWidget, QPushButton, QMessageBox, QPushButton
 )
 from PySide6.QtGui import QPixmap, QImage, QIcon
 from PySide6.QtCore import Qt, Slot
@@ -16,7 +16,7 @@ from worker import CubiCasaWorker
 class PDFViewerApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("CubiCasa5k Viewer + BOQ Extractor")
+        self.setWindowTitle("PDF BOQ Viewer")
         self.resize(1400, 900)
         self.current_pdf_path = None
         self.temp_files = [] 
@@ -63,6 +63,16 @@ class PDFViewerApp(QMainWindow):
         self.btn_items.clicked.connect(self.on_toggle_items)
         self.btn_items.setEnabled(False)
 
+        # New Control Buttons
+        self.btn_measure = QPushButton("Measure Area")
+        self.btn_measure.clicked.connect(self.on_measure_clicked)
+        self.btn_measure.setEnabled(False)
+
+        self.btn_mode_toggle = QPushButton("Mode: Grabber")
+        self.btn_mode_toggle.setCheckable(True)
+        self.btn_mode_toggle.clicked.connect(self.toggle_interaction_mode)
+        self.btn_mode_toggle.setEnabled(False)
+
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: gray; font-style: italic;")
         self.status_label.setWordWrap(True)
@@ -72,6 +82,9 @@ class PDFViewerApp(QMainWindow):
         control_layout.addWidget(self.btn_rooms)
         control_layout.addWidget(self.btn_items)
         control_layout.addWidget(self.status_label)
+        control_layout.addSpacing(10)
+        control_layout.addWidget(self.btn_measure)
+        control_layout.addWidget(self.btn_mode_toggle)
         control_layout.addStretch()
 
         layout.addWidget(controls)
@@ -134,14 +147,36 @@ class PDFViewerApp(QMainWindow):
         if isinstance(viewer, DocumentViewer):
             self.btn_rooms.setEnabled(True)
             self.btn_items.setEnabled(True)
+            
+            # Block signals to prevent feedback loops when setting state
             self.btn_rooms.blockSignals(True)
             self.btn_items.blockSignals(True)
             self.btn_rooms.setChecked(viewer.show_rooms)
             self.btn_items.setChecked(viewer.show_items)
             self.btn_rooms.blockSignals(False)
             self.btn_items.blockSignals(False)
-            self.legend.set_visibility(viewer.show_rooms, viewer.show_items)
             
+            self.legend.set_visibility(viewer.show_rooms, viewer.show_items)
+            self.btn_measure.setEnabled(True)
+            self.btn_mode_toggle.setEnabled(True)
+
+            has_data = len(viewer.current_path) > 0 or len(viewer.completed_shapes) > 0
+            
+            if viewer.pixel_to_unit_ratio is not None:
+                self.btn_measure.setText("Re-calibrate Scale")
+            elif has_data:
+                self.btn_measure.setText("Re-measure Area")
+            else:
+                self.btn_measure.setText("Measure Area")
+            
+            # Sync Toggle Button
+            if viewer.mode == "measure":
+                self.btn_mode_toggle.setChecked(True)
+                self.btn_mode_toggle.setText("Mode: Measurer")
+            else:
+                self.btn_mode_toggle.setChecked(False)
+                self.btn_mode_toggle.setText("Mode: Grabber")
+
             if viewer.has_analysis_data:
                 self.status_label.setText("Analysis & Data Ready")
             else:
@@ -151,6 +186,30 @@ class PDFViewerApp(QMainWindow):
             self.btn_items.setEnabled(False)
             self.legend.set_visibility(False, False)
             self.status_label.setText("")
+            self.btn_measure.setEnabled(False)
+            self.btn_mode_toggle.setEnabled(False)
+
+    def on_measure_clicked(self):
+        viewer = self.tabs.currentWidget()
+        if isinstance(viewer, DocumentViewer):
+            if viewer.pixel_to_unit_ratio is not None:
+                # Still used for global calibration reset if needed
+                viewer.recalibrate() 
+            else:
+                # First time use
+                viewer.set_mode("measure")
+            self.update_toolbar_state()
+
+    def toggle_interaction_mode(self):
+        viewer = self.tabs.currentWidget()
+        if not viewer: return
+        
+        if self.btn_mode_toggle.isChecked():
+            viewer.set_mode("measure")
+            self.btn_mode_toggle.setText("Mode: Measurer")
+        else:
+            viewer.set_mode("grab")
+            self.btn_mode_toggle.setText("Mode: Grabber")
 
     def close_tab(self, index):
         self.tabs.removeTab(index)
@@ -188,7 +247,7 @@ class PDFViewerApp(QMainWindow):
     def on_analysis_finished(self, room_path, item_path, json_path):
         viewer = self.tabs.currentWidget()
         if isinstance(viewer, DocumentViewer):
-            viewer.set_overlays(room_path, item_path)
+            viewer.set_overlays(room_path, item_path, json_path)
             rooms_checked = self.btn_rooms.isChecked()
             items_checked = self.btn_items.isChecked()
             viewer.toggle_layers(rooms_checked, items_checked)
