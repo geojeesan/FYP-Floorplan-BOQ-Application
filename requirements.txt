@@ -14,3 +14,4 @@ svgpathtools
 networkx
 lmdb
 tensorboardX
+requests

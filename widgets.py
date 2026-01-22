@@ -1,8 +1,9 @@
 import os
 import json
+import requests
 import numpy as np
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QLabel, QInputDialog, QPushButton
+    QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QLabel, QInputDialog, QPushButton, QTextEdit, QLineEdit
 )
 from PySide6.QtGui import QPixmap, QPainter, QWheelEvent, QPen, QColor, QFont, QPolygonF, QCursor
 from PySide6.QtCore import Qt, QPoint, QPointF, QEvent
@@ -500,3 +501,86 @@ class DocumentViewer(QWidget):
         self.show_rooms = show_rooms
         self.show_items = show_items
         self.update_view()
+
+    def get_scaled_boq_data(self):
+        """Returns a dictionary with all coordinates and areas converted to meters."""
+        if not self.boq_data or not self.pixel_to_unit_ratio:
+            return self.boq_data # Return raw if not scaled
+        
+        scaled_export = {
+            "scale_ratio": self.pixel_to_unit_ratio,
+            "rooms": [],
+            "icons": []
+        }
+        
+        for room in self.boq_data.get("rooms", []):
+            area_m2 = room["area_pixels"] * (self.pixel_to_unit_ratio ** 2)
+            scaled_export["rooms"].append({
+                "label": room["label"],
+                "area_m2": round(area_m2, 2),
+                "unit": "square meters"
+            })
+        
+        for icon in self.boq_data.get("icons", []):
+            scaled_export["icons"].append({"label": icon["label"]})
+            
+        return scaled_export
+    
+class AIChatPanel(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setFixedWidth(300)
+        layout = QVBoxLayout(self)
+        
+        layout.addWidget(QLabel("<b>Floorplan Assistant</b>"))
+        
+        self.chat_history = QTextEdit()
+        self.chat_history.setReadOnly(True)
+        layout.addWidget(self.chat_history)
+        
+        self.input_field = QLineEdit()
+        self.input_field.setPlaceholderText("Ask about the floorplan...")
+        self.input_field.returnPressed.connect(self.send_message)
+        layout.addWidget(self.input_field)
+        
+        self.send_btn = QPushButton("Ask")
+        self.send_btn.clicked.connect(self.send_message)
+        layout.addWidget(self.send_btn)
+
+    def send_message(self):
+        user_text = self.input_field.text()
+        if not user_text: return
+        
+        self.chat_history.append(f"<b>You:</b> {user_text}")
+        self.input_field.clear()
+        
+        # Get data from active tab
+        main_win = self.window()
+        viewer = main_win.tabs.currentWidget()
+        
+        context_data = {}
+        if isinstance(viewer, DocumentViewer) and viewer.has_analysis_data:
+            context_data = viewer.get_scaled_boq_data()
+        
+        prompt = f"""
+        You are an architectural assistant. Use the following floorplan data to answer:
+        Data: {context_data}
+        User Question: {user_text}
+        Keep answers concise. If areas are available, mention them.
+        """
+        
+        try:
+            response = requests.post("http://localhost:11434/api/generate", 
+                json={
+                    "model": "phi4-mini",
+                    "prompt": prompt,
+                    "stream": False
+                }, timeout=10)
+            
+            if response.status_code == 200:
+                answer = response.json().get("response", "No response.")
+                self.chat_history.append(f"<b>AI:</b> {answer}")
+            else:
+                self.chat_history.append("<b>Error:</b> Could not reach Ollama.")
+        except Exception as e:
+            self.chat_history.append(f"<b>Error:</b> {str(e)}")

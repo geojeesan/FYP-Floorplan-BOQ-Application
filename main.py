@@ -8,9 +8,10 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QPixmap, QImage, QIcon
 from PySide6.QtCore import Qt, Slot
+from torch import layout
 
 # --- Local Module Imports ---
-from widgets import DocumentViewer, LegendWidget
+from widgets import DocumentViewer, LegendWidget, AIChatPanel
 from worker import CubiCasaWorker
 
 class PDFViewerApp(QMainWindow):
@@ -94,6 +95,9 @@ class PDFViewerApp(QMainWindow):
         layout.addWidget(self.legend_scroll)
         
         self.worker = None
+
+        self.chat_panel = AIChatPanel()
+        layout.addWidget(self.chat_panel)
 
     def open_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open File", "", "PDF/Images (*.pdf *.png *.jpg)")
