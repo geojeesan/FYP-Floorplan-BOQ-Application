@@ -1,118 +1,14 @@
 import os
 import json
-import requests
 import numpy as np
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QLabel, QInputDialog, QPushButton, QTextEdit, QLineEdit
+    QWidget, QVBoxLayout, QScrollArea, QLabel, QInputDialog
 )
-from PySide6.QtGui import QPixmap, QPainter, QWheelEvent, QPen, QColor, QFont, QPolygonF, QCursor
+from PySide6.QtGui import QPixmap, QPainter, QWheelEvent, QPen, QColor, QFont, QPolygonF
 from PySide6.QtCore import Qt, QPoint, QPointF, QEvent
-import constants
 
-class LegendWidget(QWidget):
-    """
-    Displays color keys for Rooms and Icons.
-    """
-    def __init__(self):
-        super().__init__()
-        self.layout = QVBoxLayout(self)
-        self.layout.setAlignment(Qt.AlignTop)
-        
-        self.room_colors, self.icon_colors = constants.get_class_colors()
-        
-        self.room_container = QWidget()
-        self.room_layout = QVBoxLayout(self.room_container)
-        self.room_layout.setContentsMargins(0,0,0,0)
-        self.layout.addWidget(QLabel("<b>Rooms</b>"))
-        self.layout.addWidget(self.room_container)
-        
-        self.item_container = QWidget()
-        self.item_layout = QVBoxLayout(self.item_container)
-        self.item_layout.setContentsMargins(0,0,0,0)
-        self.layout.addWidget(QLabel("<b>Items</b>"))
-        self.layout.addWidget(self.item_container)
-
-        self.populate_legend(self.room_layout, constants.ROOM_CLASSES, self.room_colors, clickable=True)
-        self.populate_legend(self.item_layout, constants.ICON_CLASSES, self.icon_colors, clickable=False)
-        
-        self.room_container.setVisible(False)
-        self.item_container.setVisible(False)
-
-    def populate_legend(self, layout, classes, colors, clickable):
-        for i in range(1, len(classes)):
-            if i >= len(colors): break
-            row = QWidget()
-            row_layout = QHBoxLayout(row)
-            row_layout.setContentsMargins(0, 2, 0, 2)
-            
-            color_lbl = QLabel()
-            color_lbl.setFixedSize(20, 20)
-            c = colors[i]
-            hex_c = f"#{c[0]:02x}{c[1]:02x}{c[2]:02x}"
-            color_lbl.setStyleSheet(f"background-color: {hex_c}; border: 1px solid gray;")
-            
-            # Use specific name for the click handler
-            label_name = classes[i]
-            
-            text_btn = QPushButton(label_name)
-            text_btn.setEnabled(True)
-            text_btn.setCursor(Qt.PointingHandCursor)
-            
-            # Updated style: White text with hover effect
-            text_btn.setStyleSheet("""
-                QPushButton {
-                    text-align: left; 
-                    border: 1px solid transparent; 
-                    background: transparent; 
-                    padding: 2px;
-                    color: white; /* Changed to white for better contrast */
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: rgba(255, 255, 255, 30);
-                    border: 1px solid rgba(255, 255, 255, 50);
-                }
-            """)
-            
-            if clickable:
-                # Rooms use the existing orange logic
-                text_btn.clicked.connect(lambda checked=False, n=label_name: self.on_room_clicked(n))
-            else:
-                # Items now use the new blue logic
-                text_btn.clicked.connect(lambda checked=False, n=label_name: self.on_item_clicked(n))
-                
-            row_layout.addWidget(color_lbl)
-            row_layout.addWidget(text_btn)
-            row_layout.addStretch()
-            layout.addWidget(row)
-
-    def on_item_clicked(self, item_name):
-        """Highlights AI-detected items (doors, windows, etc.) in Blue."""
-        print(f"Item Legend clicked: {item_name}")
-        main_win = self.window()
-        if hasattr(main_win, 'tabs'):
-            viewer = main_win.tabs.currentWidget()
-            if isinstance(viewer, DocumentViewer):
-                viewer.select_item_type(item_name)
-
-    def on_room_clicked(self, room_name):
-        """Dispatches the room selection to the active tab's viewer."""
-        # Print for debugging to see if the button is even registering a click
-        print(f"Legend clicked: {room_name}")
-        
-        # Traverse up to find the main window manually if .window() fails
-        parent = self.parent()
-        while parent is not None:
-            if hasattr(parent, 'tabs'):
-                viewer = parent.tabs.currentWidget()
-                if isinstance(viewer, DocumentViewer):
-                    viewer.select_room_type(room_name)
-                    return
-            parent = parent.parent()
-
-    def set_visibility(self, show_rooms, show_items):
-        self.room_container.setVisible(show_rooms)
-        self.item_container.setVisible(show_items)
+# Access constants from root
+import constants 
 
 class DocumentViewer(QWidget):
     def __init__(self, file_path):
@@ -273,7 +169,6 @@ class DocumentViewer(QWidget):
 
             self.temp_mouse_pos = self.get_image_coords(local_pos)
             
-            # FIX: Changed measurement_points to current_path
             if len(self.current_path) > 0:
                 self.update_view()
         
@@ -320,7 +215,6 @@ class DocumentViewer(QWidget):
 
     def calculate_initial_scale(self):
         """Prompt for real-world distance using the first two points of the active path."""
-        # FIX: Changed measurement_points to current_path
         if len(self.current_path) >= 2:
             p1, p2 = self.current_path[0], self.current_path[1]
             dist_px = ((p2.x() - p1.x())**2 + (p2.y() - p1.y())**2)**0.5
@@ -439,8 +333,6 @@ class DocumentViewer(QWidget):
                             pts.append(QPointF(float(p[0]), float(p[1])) * self.zoom_level)
                         # Fallback for flat lists [x, y, x, y...] if they occur
                         elif isinstance(p, (int, float)):
-                            # Handle case where raw_pts is actually [x, y, x, y...]
-                            # This is a safety measure
                             pass 
                     except (TypeError, ValueError, IndexError):
                         continue
@@ -525,62 +417,3 @@ class DocumentViewer(QWidget):
             scaled_export["icons"].append({"label": icon["label"]})
             
         return scaled_export
-    
-class AIChatPanel(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.setFixedWidth(300)
-        layout = QVBoxLayout(self)
-        
-        layout.addWidget(QLabel("<b>Floorplan Assistant</b>"))
-        
-        self.chat_history = QTextEdit()
-        self.chat_history.setReadOnly(True)
-        layout.addWidget(self.chat_history)
-        
-        self.input_field = QLineEdit()
-        self.input_field.setPlaceholderText("Ask about the floorplan...")
-        self.input_field.returnPressed.connect(self.send_message)
-        layout.addWidget(self.input_field)
-        
-        self.send_btn = QPushButton("Ask")
-        self.send_btn.clicked.connect(self.send_message)
-        layout.addWidget(self.send_btn)
-
-    def send_message(self):
-        user_text = self.input_field.text()
-        if not user_text: return
-        
-        self.chat_history.append(f"<b>You:</b> {user_text}")
-        self.input_field.clear()
-        
-        # Get data from active tab
-        main_win = self.window()
-        viewer = main_win.tabs.currentWidget()
-        
-        context_data = {}
-        if isinstance(viewer, DocumentViewer) and viewer.has_analysis_data:
-            context_data = viewer.get_scaled_boq_data()
-        
-        prompt = f"""
-        You are an architectural assistant. Use the following floorplan data to answer:
-        Data: {context_data}
-        User Question: {user_text}
-        Keep answers concise. If areas are available, mention them.
-        """
-        
-        try:
-            response = requests.post("http://localhost:11434/api/generate", 
-                json={
-                    "model": "phi4-mini",
-                    "prompt": prompt,
-                    "stream": False
-                }, timeout=10)
-            
-            if response.status_code == 200:
-                answer = response.json().get("response", "No response.")
-                self.chat_history.append(f"<b>AI:</b> {answer}")
-            else:
-                self.chat_history.append("<b>Error:</b> Could not reach Ollama.")
-        except Exception as e:
-            self.chat_history.append(f"<b>Error:</b> {str(e)}")
