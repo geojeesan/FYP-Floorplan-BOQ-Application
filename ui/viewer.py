@@ -19,6 +19,15 @@ class DocumentViewer(QWidget):
         self.item_pixmap = None
         self.boq_data = None
         
+        # --- Chat State (New) ---
+        self.chat_log = [] # Stores [(role, message), ...] for this specific document
+        
+        # --- PDF & Sidebar State ---
+        self.is_pdf_browser = False  # Flag: Is this tab a PDF navigator?
+        self.pdf_path = None         # Path to the source PDF
+        self.current_page_num = 0    # Current page index
+        self.thumbnail_widget = None # Holds the QWidget containing sidebar buttons
+        
         self.show_rooms = False
         self.show_items = False
         self.zoom_level = 1.0
@@ -26,9 +35,9 @@ class DocumentViewer(QWidget):
         
         # --- Persistent Measurement State ---
         self.mode = "grab" 
-        self.completed_shapes = [] # List of lists: [ [p1, p2, p3], [p4, p5, p6] ]
-        self.current_path = []     # Currently active line string
-        self.is_closed = False     # State for the active path
+        self.completed_shapes = [] 
+        self.current_path = []     
+        self.is_closed = False     
         self.temp_mouse_pos = None
         self.pixel_to_unit_ratio = None
         self.last_mouse_pos = QPoint()
@@ -53,20 +62,35 @@ class DocumentViewer(QWidget):
         
         self.load_base_image()
 
+    def update_image(self, file_path):
+        """Swaps the displayed image (e.g., when changing PDF pages)."""
+        self.file_path = file_path
+        self.load_base_image()
+        
+        # Reset specific layer/analysis states
+        self.room_pixmap = None
+        self.item_pixmap = None
+        self.boq_data = None
+        self.has_analysis_data = False
+        self.show_rooms = False
+        self.show_items = False
+        self.selected_room_class = None
+        self.selected_item_class = None
+        self.chat_log = [] # Reset chat for new page
+        
+        # Note: We keep zoom_level and measurement mode active for better UX
+        self.clear_measurements()
+
     def select_item_type(self, item_name):
-        """Sets the AI item class to highlight."""
         self.selected_item_class = item_name
         self.update_view()
 
     def select_room_type(self, room_name):
-        """Sets the AI room class to highlight and triggers a refresh."""
         self.selected_room_class = room_name
-        # Force the widget to recalculate and repaint
         self.update_view()
         self.label.update()
 
     def set_mode(self, mode):
-        """Toggle between 'grab' and 'measure' modes."""
         self.mode = mode
         if mode == "grab":
             self.label.setCursor(Qt.OpenHandCursor)
@@ -75,9 +99,7 @@ class DocumentViewer(QWidget):
         self.update_view()
 
     def eventFilter(self, source, event):
-        """Intercepts events from the label so DocumentViewer can see them."""
         if source is self.label and event.type() == QEvent.MouseMove:
-            # Manually trigger our mouse move logic
             self.mouseMoveEvent(event)
         return super().eventFilter(source, event)
 
@@ -92,7 +114,6 @@ class DocumentViewer(QWidget):
             self.label.setText(f"Error: {e}")
 
     def clear_measurements(self):
-        """Clears everything: completed shapes and the active path."""
         self.completed_shapes = []
         self.current_path = []
         self.temp_mouse_pos = None
@@ -100,18 +121,14 @@ class DocumentViewer(QWidget):
         self.update_view()
 
     def get_image_coords(self, pos):
-        """Works with both global and local coordinates based on event type."""
-        # If it's a QMouseEvent, it usually provides local pos relative to source
         return QPointF(pos) / self.zoom_level
     
     def recalibrate(self):
-        """Re-opens scale input for the first segment of the active path."""
         if len(self.current_path) >= 2:
             self.calculate_initial_scale()
             self.update_view()
 
     def keyPressEvent(self, event):
-        """Cancels measurement when Escape is pressed."""
         if event.key() == Qt.Key_Escape:
             self.clear_measurements()
             if hasattr(self.window(), 'update_toolbar_state'):
@@ -125,7 +142,6 @@ class DocumentViewer(QWidget):
             img_pos = self.get_image_coords(local_pos)
             tolerance = 15 / self.zoom_level
 
-            # 1. Logic for closing a loop or undoing a point
             for i, pt in enumerate(self.current_path):
                 dist = ((img_pos.x() - pt.x())**2 + (img_pos.y() - pt.y())**2)**0.5
                 if dist < tolerance:
@@ -138,10 +154,8 @@ class DocumentViewer(QWidget):
                     self.update_view()
                     return
 
-            # 2. Logic for adding a new point
             self.current_path.append(img_pos)
             
-            # Trigger scale prompt on the second point if not already calibrated
             if len(self.current_path) == 2 and self.pixel_to_unit_ratio is None:
                 self.calculate_initial_scale()
             
@@ -156,12 +170,10 @@ class DocumentViewer(QWidget):
 
     def mouseMoveEvent(self, event):
         if self.mode == "measure":
-            # Stop the dotted line if shape is closed
             if self.is_closed:
                 self.temp_mouse_pos = None
                 return
 
-            # Map mouse position to image coordinates
             if hasattr(event, 'globalPos'):
                 local_pos = self.label.mapFromGlobal(event.globalPos())
             else:
@@ -188,13 +200,10 @@ class DocumentViewer(QWidget):
 
     def wheelEvent(self, event: QWheelEvent):
         if event.modifiers() & Qt.ControlModifier:
-            # 1. Record current mouse position relative to the image (0.0 to 1.0)
-            # This is the "anchor" point we want to zoom into
             pos = event.position()
             scrollbar_pos = QPoint(self.scroll_area.horizontalScrollBar().value(),
                                   self.scroll_area.verticalScrollBar().value())
             
-            # Map mouse to global, then to label local
             local_pos = self.label.mapFromGlobal(event.globalPosition().toPoint())
             
             old_zoom = self.zoom_level
@@ -203,7 +212,6 @@ class DocumentViewer(QWidget):
             
             self.update_view()
             
-            # 2. Adjust scrollbars to keep the mouse over the same image pixel
             zoom_factor = self.zoom_level / old_zoom
             new_h = (scrollbar_pos.x() + local_pos.x()) * zoom_factor - local_pos.x()
             new_v = (scrollbar_pos.y() + local_pos.y()) * zoom_factor - local_pos.y()
@@ -214,7 +222,6 @@ class DocumentViewer(QWidget):
             event.accept()
 
     def calculate_initial_scale(self):
-        """Prompt for real-world distance using the first two points of the active path."""
         if len(self.current_path) >= 2:
             p1, p2 = self.current_path[0], self.current_path[1]
             dist_px = ((p2.x() - p1.x())**2 + (p2.y() - p1.y())**2)**0.5
@@ -232,7 +239,6 @@ class DocumentViewer(QWidget):
                        sum(p.y() for p in points) / len(points))
     
     def calculate_area_px(self, points):
-        """Shoelace formula for a specific point list."""
         x = [p.x() for p in points]
         y = [p.y() for p in points]
         return 0.5 * np.abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)))
@@ -240,7 +246,6 @@ class DocumentViewer(QWidget):
     def update_view(self):
         if not self.original_pixmap: return
 
-        # 1. Generate Base Layers
         final_pixmap = QPixmap(self.original_pixmap)
         painter_base = QPainter(final_pixmap)
         if self.show_rooms and self.room_pixmap: 
@@ -249,7 +254,6 @@ class DocumentViewer(QWidget):
             painter_base.drawPixmap(0, 0, self.item_pixmap)
         painter_base.end()
 
-        # 2. Scaling for Zoom
         display_pixmap = final_pixmap
         if self.zoom_level != 1.0:
             display_pixmap = final_pixmap.scaled(
@@ -260,25 +264,20 @@ class DocumentViewer(QWidget):
         painter = QPainter(display_pixmap)
         painter.setRenderHint(QPainter.Antialiasing)
         
-        # --- DRAW AI SELECTED ROOMS (Orange Highlight) ---
         if self.selected_room_class and self.boq_data:
             self.draw_ai_shapes(painter, "rooms", self.selected_room_class, QColor(255, 140, 0))
 
-        # --- DRAW AI SELECTED ITEMS (Blue) ---
         if self.selected_item_class and self.boq_data:
             self.draw_ai_shapes(painter, "icons", self.selected_item_class, QColor(0, 191, 255))
 
-        # --- DRAW MANUAL MEASUREMENTS (Red) ---
         main_color = QColor(255, 0, 0)
         painter.setFont(QFont("Segoe UI", 10, QFont.Bold))
         for shape in self.completed_shapes:
             d_pts = [p * self.zoom_level for p in shape]
-            # Fill
             painter.setBrush(QColor(255, 0, 0, 40))
             painter.setPen(QPen(main_color, 3))
             painter.drawPolygon(QPolygonF(d_pts))
             
-            # Area Label
             if self.pixel_to_unit_ratio:
                 area = self.calculate_area_px(shape) * (self.pixel_to_unit_ratio ** 2)
                 centroid = self.calculate_centroid(d_pts)
@@ -287,7 +286,6 @@ class DocumentViewer(QWidget):
                 painter.setPen(Qt.white)
                 painter.drawText(centroid.toPoint(), f"{area:.2f} m²")
 
-        # --- DRAW ACTIVE PATH ---
         if self.current_path:
             painter.setBrush(Qt.NoBrush)
             painter.setPen(QPen(main_color, 3))
@@ -314,7 +312,6 @@ class DocumentViewer(QWidget):
         self.label.setPixmap(display_pixmap)
 
     def draw_ai_shapes(self, painter, data_key, target_label, color):
-        """Helper to draw AI polygons from JSON data with robust point handling."""
         painter.setPen(QPen(color, 4))
         painter.setBrush(QColor(color.red(), color.green(), color.blue(), 80))
         painter.setFont(QFont("Segoe UI", 11, QFont.Bold))
@@ -325,15 +322,10 @@ class DocumentViewer(QWidget):
                 if not raw_pts: continue
                 
                 pts = []
-                # FIX: Robust check for point format
                 for p in raw_pts:
                     try:
-                        # Check if p is a list/tuple like [x, y]
                         if isinstance(p, (list, tuple)) and len(p) >= 2:
                             pts.append(QPointF(float(p[0]), float(p[1])) * self.zoom_level)
-                        # Fallback for flat lists [x, y, x, y...] if they occur
-                        elif isinstance(p, (int, float)):
-                            pass 
                     except (TypeError, ValueError, IndexError):
                         continue
 
@@ -349,7 +341,6 @@ class DocumentViewer(QWidget):
                         painter.setPen(color)
 
     def export_scaled_data(self):
-        """Saves a JSON with all coordinates and areas converted to meters."""
         if not self.boq_data or not self.pixel_to_unit_ratio: return
         
         scaled_export = {
@@ -358,7 +349,6 @@ class DocumentViewer(QWidget):
         }
         
         for room in self.boq_data["rooms"]:
-            # Scale coordinates to meters
             scaled_pts = [[p[0] * self.pixel_to_unit_ratio, p[1] * self.pixel_to_unit_ratio] 
                           for p in room["points"]]
             
@@ -377,12 +367,10 @@ class DocumentViewer(QWidget):
         self.room_pixmap = QPixmap(room_path)
         self.item_pixmap = QPixmap(item_path)
         
-        # Load the JSON data generated by the worker
         if json_data_path and os.path.exists(json_data_path):
             try:
                 with open(json_data_path, 'r') as f:
                     self.boq_data = json.load(f)
-                    print(f"Loaded AI Data: {len(self.boq_data.get('rooms', []))} rooms found.")
             except Exception as e:
                 print(f"Failed to load AI JSON: {e}")
         
@@ -395,9 +383,8 @@ class DocumentViewer(QWidget):
         self.update_view()
 
     def get_scaled_boq_data(self):
-        """Returns a dictionary with all coordinates and areas converted to meters."""
         if not self.boq_data or not self.pixel_to_unit_ratio:
-            return self.boq_data # Return raw if not scaled
+            return self.boq_data 
         
         scaled_export = {
             "scale_ratio": self.pixel_to_unit_ratio,

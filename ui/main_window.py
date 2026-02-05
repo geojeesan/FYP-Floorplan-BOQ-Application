@@ -1,8 +1,11 @@
 import os
+import sys
 import fitz  # PyMuPDF
+import random
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QScrollArea, QLabel, QFileDialog, QTabWidget, QPushButton, QMessageBox
+    QScrollArea, QLabel, QFileDialog, QTabWidget, QPushButton, QMessageBox,
+    QStackedWidget, QButtonGroup
 )
 from PySide6.QtGui import QPixmap, QImage, QIcon
 from PySide6.QtCore import Qt, Slot
@@ -27,14 +30,10 @@ class PDFViewerApp(QMainWindow):
         self.setCentralWidget(main_widget)
         layout = QHBoxLayout(main_widget)
 
-        # Sidebar
+        # Sidebar (Initially Empty)
         self.thumbnail_scroll = QScrollArea()
-        self.thumbnail_scroll.setFixedWidth(200)
+        self.thumbnail_scroll.setFixedWidth(100)
         self.thumbnail_scroll.setWidgetResizable(True)
-        self.thumbnail_content = QWidget()
-        self.thumbnail_layout = QVBoxLayout(self.thumbnail_content)
-        self.thumbnail_layout.setAlignment(Qt.AlignTop)
-        self.thumbnail_scroll.setWidget(self.thumbnail_content)
         
         # Tabs
         self.tabs = QTabWidget()
@@ -42,15 +41,57 @@ class PDFViewerApp(QMainWindow):
         self.tabs.tabCloseRequested.connect(self.close_tab)
         self.tabs.currentChanged.connect(self.update_toolbar_state)
 
-        # Legend
+        # --- Right Sidebar Configuration ---
+        self.right_sidebar = QWidget()
+        self.right_sidebar.setFixedWidth(320)
+        self.right_layout = QVBoxLayout(self.right_sidebar)
+        self.right_layout.setContentsMargins(5, 5, 5, 5)
+
+        # 1. Toggle Buttons (Chat vs Legend) - Hidden by default
+        self.toggle_container = QWidget()
+        toggle_layout = QHBoxLayout(self.toggle_container)
+        toggle_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.btn_show_chat = QPushButton("Chat")
+        self.btn_show_chat.setCheckable(True)
+        self.btn_show_chat.setChecked(True)
+        
+        self.btn_show_legend = QPushButton("Legend / Data")
+        self.btn_show_legend.setCheckable(True)
+        
+        self.view_group = QButtonGroup(self)
+        self.view_group.addButton(self.btn_show_chat)
+        self.view_group.addButton(self.btn_show_legend)
+        
+        toggle_layout.addWidget(self.btn_show_chat)
+        toggle_layout.addWidget(self.btn_show_legend)
+        
+        self.right_layout.addWidget(self.toggle_container)
+        
+        # 2. Stacked Widget
+        self.right_stack = QStackedWidget()
+        
+        # Index 0: Chat Panel
+        self.chat_panel = AIChatPanel()
+        self.right_stack.addWidget(self.chat_panel)
+        
+        # Index 1: Legend (Wrapped in ScrollArea)
         self.legend_scroll = QScrollArea()
-        self.legend_scroll.setFixedWidth(220)
         self.legend_scroll.setWidgetResizable(True)
         self.legend = LegendWidget()
         self.legend_scroll.setWidget(self.legend)
-        self.legend_scroll.hide()
+        self.right_stack.addWidget(self.legend_scroll)
+        
+        self.right_layout.addWidget(self.right_stack)
+        
+        # Connect Toggles
+        self.btn_show_chat.clicked.connect(lambda: self.right_stack.setCurrentIndex(0))
+        self.btn_show_legend.clicked.connect(lambda: self.right_stack.setCurrentIndex(1))
 
-        # Controls
+        # Hide toggles initially
+        self.toggle_container.hide()
+
+        # Controls Left Side
         controls = QWidget()
         control_layout = QVBoxLayout(controls)
         btn_open = QPushButton("Open PDF/Image")
@@ -66,7 +107,7 @@ class PDFViewerApp(QMainWindow):
         self.btn_items.clicked.connect(self.on_toggle_items)
         self.btn_items.setEnabled(False)
 
-        # New Control Buttons
+        # Control Buttons
         self.btn_measure = QPushButton("Measure Area")
         self.btn_measure.clicked.connect(self.on_measure_clicked)
         self.btn_measure.setEnabled(False)
@@ -90,15 +131,14 @@ class PDFViewerApp(QMainWindow):
         control_layout.addWidget(self.btn_mode_toggle)
         control_layout.addStretch()
 
+        # Add all to main layout
         layout.addWidget(controls)
         layout.addWidget(self.thumbnail_scroll)
         layout.addWidget(self.tabs)
-        layout.addWidget(self.legend_scroll)
+        layout.addWidget(self.right_sidebar)
         
         self.worker = None
-
-        self.chat_panel = AIChatPanel()
-        layout.addWidget(self.chat_panel)
+        self.update_toolbar_state() # Init state
 
     def open_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open File", "", "PDF/Images (*.pdf *.png *.jpg)")
@@ -108,39 +148,77 @@ class PDFViewerApp(QMainWindow):
 
     def load_single_image(self, path):
         self.add_viewer_tab(path, "Image")
-        self.clear_layout(self.thumbnail_layout)
 
     def load_pdf(self, path):
         self.current_pdf_path = path
-        self.clear_layout(self.thumbnail_layout)
         try:
             doc = fitz.open(path)
+            
+            # 1. Prepare Page 0 for the viewer
+            page0 = doc.load_page(0)
+            pix = page0.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+            temp_path = f"temp_pdf_{random.randint(0,10000)}_page_0.png"
+            pix.save(temp_path)
+            self.temp_files.append(temp_path)
+
+            # 2. Create the Viewer (This tab represents the PDF)
+            viewer = DocumentViewer(temp_path)
+            viewer.is_pdf_browser = True
+            viewer.pdf_path = path
+            viewer.current_page_num = 0
+
+            # 3. Build the Sidebar Widget FOR THIS TAB
+            thumbnail_container = QWidget()
+            thumbnail_layout = QVBoxLayout(thumbnail_container)
+            thumbnail_layout.setAlignment(Qt.AlignTop)
+            
+            # Store it in the viewer so we can retrieve it later
+            viewer.thumbnail_widget = thumbnail_container
+
             for i in range(len(doc)):
                 page = doc.load_page(i)
-                pix = page.get_pixmap(matrix=fitz.Matrix(0.2, 0.2))
-                img_data = pix.tobytes("ppm")
-                pixmap = QPixmap.fromImage(QImage.fromData(img_data))
+                # Small thumbnail
+                thumb_pix = page.get_pixmap(matrix=fitz.Matrix(0.15, 0.15))
+                img_data = thumb_pix.tobytes("ppm")
+                qpix = QPixmap.fromImage(QImage.fromData(img_data))
                 
                 btn = QPushButton()
-                btn.setIcon(QIcon(pixmap))
-                btn.setIconSize(pixmap.size())
-                btn.setFixedSize(pixmap.size())
-                btn.clicked.connect(lambda checked, p=i: self.load_pdf_page(p))
+                btn.setIcon(QIcon(qpix))
+                btn.setIconSize(qpix.size())
+                btn.setFixedSize(qpix.size())
+                btn.setFlat(True)
+                btn.setStyleSheet("border: 1px solid #ccc; margin-bottom: 5px;")
                 
-                self.thumbnail_layout.addWidget(btn)
-                self.thumbnail_layout.addWidget(QLabel(f"Page {i+1}"))
+                # Update current view when clicked
+                btn.clicked.connect(lambda checked, v=viewer, p=i: self.navigate_pdf_page(v, p))
+                
+                thumbnail_layout.addWidget(btn)
+                thumbnail_layout.addWidget(QLabel(f"Page {i+1}"))
+
+            self.tabs.addTab(viewer, os.path.basename(path))
+            self.tabs.setCurrentWidget(viewer)
+            
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not load PDF: {e}")
 
-    def load_pdf_page(self, page_num):
-        if not self.current_pdf_path: return
-        doc = fitz.open(self.current_pdf_path)
-        page = doc.load_page(page_num)
-        pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-        temp_path = f"temp_page_{page_num}.png"
-        pix.save(temp_path)
-        self.temp_files.append(temp_path)
-        self.add_viewer_tab(temp_path, f"Page {page_num+1}")
+    def navigate_pdf_page(self, viewer, page_num):
+        """Loads a specific page into the existing viewer."""
+        try:
+            doc = fitz.open(viewer.pdf_path)
+            page = doc.load_page(page_num)
+            pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+            temp_path = f"temp_pdf_{random.randint(0,10000)}_page_{page_num}.png"
+            pix.save(temp_path)
+            self.temp_files.append(temp_path)
+            
+            viewer.update_image(temp_path)
+            viewer.current_page_num = page_num
+            
+            # Reset toolbar logic since analysis is gone
+            self.update_toolbar_state()
+            
+        except Exception as e:
+            print(f"Error navigating PDF: {e}")
 
     def add_viewer_tab(self, image_path, title):
         viewer = DocumentViewer(image_path)
@@ -150,11 +228,21 @@ class PDFViewerApp(QMainWindow):
 
     def update_toolbar_state(self):
         viewer = self.tabs.currentWidget()
+        
+        # --- Sidebar Management (Thumbnails) ---
+        self.thumbnail_scroll.takeWidget()
+        
+        if isinstance(viewer, DocumentViewer) and viewer.is_pdf_browser and viewer.thumbnail_widget:
+            self.thumbnail_scroll.setWidget(viewer.thumbnail_widget)
+            self.thumbnail_scroll.show()
+        else:
+            self.thumbnail_scroll.hide()
+
+        # --- Controls & Right Pane Management ---
         if isinstance(viewer, DocumentViewer):
             self.btn_rooms.setEnabled(True)
             self.btn_items.setEnabled(True)
             
-            # Block signals to prevent feedback loops when setting state
             self.btn_rooms.blockSignals(True)
             self.btn_items.blockSignals(True)
             self.btn_rooms.setChecked(viewer.show_rooms)
@@ -167,12 +255,22 @@ class PDFViewerApp(QMainWindow):
 
             has_data = len(viewer.current_path) > 0 or len(viewer.completed_shapes) > 0
 
+            # --- Update Chat Panel Context ---
+            # Isolate chat to this specific viewer
+            self.chat_panel.set_active_viewer(viewer)
+
+            # --- Right Pane Logic ---
             if viewer.has_analysis_data:
-                self.legend_scroll.show()
-                # Ensure the legend shows the correct states for the current tab
-                self.legend.set_visibility(True, True) 
+                # Show Toggles
+                self.toggle_container.show()
+                # Ensure legend is updated
+                self.legend.set_visibility(True, True)
             else:
-                self.legend_scroll.hide()
+                # No data: Hide toggles, force Chat view
+                self.toggle_container.hide()
+                self.right_stack.setCurrentIndex(0) # Chat
+                self.btn_show_chat.setChecked(True)
+                self.legend.set_visibility(False, False)
             
             if viewer.pixel_to_unit_ratio is not None:
                 self.btn_measure.setText("Re-calibrate Scale")
@@ -181,7 +279,6 @@ class PDFViewerApp(QMainWindow):
             else:
                 self.btn_measure.setText("Measure Area")
             
-            # Sync Toggle Button
             if viewer.mode == "measure":
                 self.btn_mode_toggle.setChecked(True)
                 self.btn_mode_toggle.setText("Mode: Measurer")
@@ -191,25 +288,30 @@ class PDFViewerApp(QMainWindow):
 
             if viewer.has_analysis_data:
                 self.status_label.setText("Analysis & Data Ready")
+            elif viewer.is_pdf_browser:
+                 self.status_label.setText("PDF Mode: Select segmentation to open Analysis Tab")
             else:
                 self.status_label.setText("Ready to Analyze")
         else:
+            # No tab selected
             self.btn_rooms.setEnabled(False)
             self.btn_items.setEnabled(False)
             self.legend.set_visibility(False, False)
             self.status_label.setText("")
             self.btn_measure.setEnabled(False)
             self.btn_mode_toggle.setEnabled(False)
-            self.legend_scroll.hide()
+            self.thumbnail_scroll.hide()
+            
+            # Hide right pane contents if no viewer
+            self.toggle_container.hide()
+            self.chat_panel.set_active_viewer(None)
 
     def on_measure_clicked(self):
         viewer = self.tabs.currentWidget()
         if isinstance(viewer, DocumentViewer):
             if viewer.pixel_to_unit_ratio is not None:
-                # Still used for global calibration reset if needed
                 viewer.recalibrate() 
             else:
-                # First time use
                 viewer.set_mode("measure")
             self.update_toolbar_state()
 
@@ -239,22 +341,37 @@ class PDFViewerApp(QMainWindow):
     def handle_toggle(self):
         viewer = self.tabs.currentWidget()
         if not isinstance(viewer, DocumentViewer): return
+        
+        # Fork PDF page into new tab
+        if viewer.is_pdf_browser:
+            new_title = f"Analysis: Page {viewer.current_page_num + 1}"
+            current_image_path = viewer.file_path
+            self.add_viewer_tab(current_image_path, new_title)
+            self.btn_rooms.setChecked(True) 
+            self.btn_items.setChecked(self.sender() == self.btn_items) 
+            self.start_worker_on_current_tab()
+            return
 
+        # --- Standard Logic ---
         rooms_checked = self.btn_rooms.isChecked()
         items_checked = self.btn_items.isChecked()
 
         if not viewer.has_analysis_data:
-            self.btn_rooms.setEnabled(False)
-            self.btn_items.setEnabled(False)
-            self.status_label.setText("Extracting Contours & Analyzing...")
-            
-            self.worker = CubiCasaWorker(viewer.file_path)
-            self.worker.finished.connect(self.on_analysis_finished)
-            self.worker.error.connect(self.on_analysis_error)
-            self.worker.start()
+            self.start_worker_on_current_tab()
         else:
             viewer.toggle_layers(rooms_checked, items_checked)
             self.legend.set_visibility(rooms_checked, items_checked)
+
+    def start_worker_on_current_tab(self):
+        viewer = self.tabs.currentWidget()
+        self.btn_rooms.setEnabled(False)
+        self.btn_items.setEnabled(False)
+        self.status_label.setText("Extracting Contours & Analyzing...")
+        
+        self.worker = CubiCasaWorker(viewer.file_path)
+        self.worker.finished.connect(self.on_analysis_finished)
+        self.worker.error.connect(self.on_analysis_error)
+        self.worker.start()
 
     @Slot(str, str, str)
     def on_analysis_finished(self, room_path, item_path, json_path):
@@ -266,8 +383,11 @@ class PDFViewerApp(QMainWindow):
             viewer.toggle_layers(rooms_checked, items_checked)
             self.legend.set_visibility(rooms_checked, items_checked)
             self.temp_files.extend([room_path, item_path, json_path])
-            self.legend_scroll.show()
-            self.legend.set_visibility(True, True)
+            
+            # --- Right Pane Logic on Finish ---
+            self.toggle_container.show()
+            self.right_stack.setCurrentIndex(1)
+            self.btn_show_legend.setChecked(True)
 
         self.btn_rooms.setEnabled(True)
         self.btn_items.setEnabled(True)
