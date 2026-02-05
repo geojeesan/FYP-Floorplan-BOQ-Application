@@ -225,16 +225,50 @@ class CubiCasaWorker(QThread):
                 # polygons contains numpy arrays [[x, y], ...]
                 for i, poly in enumerate(polygons):
                     type_info = types[i]
-                    # We only care about icons here, types contains walls/icons/openings
-                    if type_info['type'] == 'icon':
-                        class_idx = type_info['class']
+                    type_str = type_info.get('type', '')
+                    
+                    # Determine if it's an Icon or Structure (Wall/Railing)
+                    # Note: CubiCasa might label Walls as type='wall' or similar. 
+                    # We check the class index to be sure.
+                    class_idx = type_info['class']
+                    
+                    # Check if it's a target type we missed previously
+                    is_icon = (type_str == 'icon')
+                    # We also want to capture Walls (class 2) and Railings (class 8) if they appear here
+                    # Usually "Wall" is class 2 in ROOM_CLASSES, but might appear in this list if it's a thin structure
+                    is_structure = False
+                    label_name = "Unknown"
+                    
+                    if is_icon:
                         label_name = constants.ICON_CLASSES[class_idx] if 0 <= class_idx < len(constants.ICON_CLASSES) else "Unknown"
-                        
                         boq_data["icons"].append({
                             "class_id": int(class_idx),
                             "label": label_name,
                             "points": poly.tolist()
                         })
+                    else:
+                        # Check if it maps to a Room Class (like Wall/Railing)
+                        # We use ROOM_CLASSES for checking name
+                        if 0 <= class_idx < len(constants.ROOM_CLASSES):
+                            pot_name = constants.ROOM_CLASSES[class_idx]
+                            if pot_name in ["Wall", "Railing"]:
+                                is_structure = True
+                                label_name = pot_name
+                        
+                        if is_structure:
+                             # Add to 'rooms' list because our Legend expects them there (and they share Room colors)
+                             # Calculate area if possible, though for linear walls it might be small
+                            area_px = 0.0
+                            if len(poly) >= 3:
+                                area_px = 0.5 * np.abs(np.dot(poly[:, 0], np.roll(poly[:, 1], 1)) - np.dot(poly[:, 1], np.roll(poly[:, 0], 1)))
+
+                            boq_data["rooms"].append({
+                                "class_id": int(class_idx),
+                                "label": label_name,
+                                "area_pixels": float(area_px),
+                                "points": poly.tolist(),
+                                "is_structure": True # Flag to help differentiate if needed
+                            })
                     
             except Exception as e:
                 print(f"Native polygon extraction failed: {e}. Using OpenCV fallback.")

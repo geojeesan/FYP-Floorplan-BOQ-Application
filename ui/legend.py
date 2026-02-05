@@ -14,21 +14,28 @@ class LegendWidget(QWidget):
         self.room_colors, self.icon_colors = constants.get_class_colors()
         self.buttons = {} 
         
-        # Containers for Room and Item rows
+        # Containers for Room, Structure, and Item rows
         self.room_container = QWidget()
         self.room_layout = QVBoxLayout(self.room_container)
         self.room_layout.setContentsMargins(0,0,0,0)
         
+        self.structure_container = QWidget()
+        self.structure_layout = QVBoxLayout(self.structure_container)
+        self.structure_layout.setContentsMargins(0,0,0,0)
+
         self.item_container = QWidget()
         self.item_layout = QVBoxLayout(self.item_container)
         self.item_layout.setContentsMargins(0,0,0,0)
 
         self.layout.addWidget(QLabel("<b>Rooms</b>"))
         self.layout.addWidget(self.room_container)
+        self.layout.addWidget(QLabel("<b>Structures</b>"))
+        self.layout.addWidget(self.structure_container)
         self.layout.addWidget(QLabel("<b>Items</b>"))
         self.layout.addWidget(self.item_container)
         
         self.room_container.setVisible(False)
+        self.structure_container.setVisible(False)
         self.item_container.setVisible(False)
 
     def _clear_layout(self, layout):
@@ -41,6 +48,7 @@ class LegendWidget(QWidget):
     def refresh_legend(self, boq_data):
         """Populates the legend dynamically based on detected objects."""
         self._clear_layout(self.room_layout)
+        self._clear_layout(self.structure_layout)
         self._clear_layout(self.item_layout)
         self.buttons = {}
         
@@ -48,14 +56,33 @@ class LegendWidget(QWidget):
         present_rooms = {item['label'] for item in boq_data.get('rooms', [])}
         present_icons = {item['label'] for item in boq_data.get('icons', [])}
 
-        self._add_items_to_layout(self.room_layout, constants.ROOM_CLASSES, 
-                                 self.room_colors, present_rooms, is_room=True)
-        self._add_items_to_layout(self.item_layout, constants.ICON_CLASSES, 
-                                 self.icon_colors, present_icons, is_room=False)
+        structure_classes = {"Wall", "Railing"}
+        room_classes_filtered = [c for c in constants.ROOM_CLASSES if c not in structure_classes]
 
-    def _add_items_to_layout(self, layout, classes, colors, present_set, is_room):
-        for i, label_name in enumerate(classes):
+        self._add_items_to_layout(self.room_layout, room_classes_filtered, 
+                                 self.room_colors, constants.ROOM_CLASSES, present_rooms, is_room=True)
+        
+        # We need to map from the original constant index to get the correct color
+        self._add_items_to_layout(self.structure_layout, list(structure_classes), 
+                                 self.room_colors, constants.ROOM_CLASSES, present_rooms, is_room=True, clickable=False)
+
+        self._add_items_to_layout(self.item_layout, constants.ICON_CLASSES, 
+                                 self.icon_colors, constants.ICON_CLASSES, present_icons, is_room=False)
+        
+        # Update visibility of structure container if any structures are present
+        has_structures = any(s in present_rooms for s in structure_classes)
+        self.structure_container.setVisible(has_structures)
+
+    def _add_items_to_layout(self, layout, classes_to_show, color_map, source_classes_list, present_set, is_room, clickable=True):
+        for label_name in classes_to_show:
             if label_name in present_set:
+                # Find original index for color
+                try:
+                    idx = source_classes_list.index(label_name)
+                    c = color_map[idx]
+                except ValueError:
+                    continue # Should not happen if data is consistent
+
                 row = QWidget()
                 row_layout = QHBoxLayout(row)
                 row_layout.setContentsMargins(0, 2, 0, 2)
@@ -63,23 +90,29 @@ class LegendWidget(QWidget):
                 # Color Swatch
                 color_lbl = QLabel()
                 color_lbl.setFixedSize(14, 14)
-                c = colors[i]
                 hex_c = f"#{c[0]:02x}{c[1]:02x}{c[2]:02x}"
                 color_lbl.setStyleSheet(f"background-color: {hex_c}; border-radius: 2px;")
                 
-                # Toggleable Button
-                btn = QPushButton(label_name)
-                btn.setCheckable(True) 
-                btn.setCursor(Qt.PointingHandCursor)
-                btn.setStyleSheet(self._get_btn_style(False))
-                
-                # Pass the button itself to the handler to manage state
-                btn.clicked.connect(lambda checked, b=btn, n=label_name, r=is_room: self.handle_click(b, n, r))
-                
-                self.buttons[label_name] = btn
-                
                 row_layout.addWidget(color_lbl)
-                row_layout.addWidget(btn)
+
+                if clickable:
+                    # Toggleable Button
+                    btn = QPushButton(label_name)
+                    btn.setCheckable(True) 
+                    btn.setCursor(Qt.PointingHandCursor)
+                    btn.setStyleSheet(self._get_btn_style(False))
+                    
+                    # Pass the button itself to the handler to manage state
+                    btn.clicked.connect(lambda checked, b=btn, n=label_name, r=is_room: self.handle_click(b, n, r))
+                    
+                    self.buttons[label_name] = btn
+                    row_layout.addWidget(btn)
+                else:
+                    # Static Label for unclickable items
+                    lbl = QLabel(label_name)
+                    lbl.setStyleSheet("color: white; font-size: 11px; padding: 4px 8px;")
+                    row_layout.addWidget(lbl)
+                
                 row_layout.addStretch()
                 layout.addWidget(row)
 
@@ -133,4 +166,9 @@ class LegendWidget(QWidget):
     def set_visibility(self, show_rooms, show_items):
         """Syncs legend category visibility with the toolbar toggles."""
         self.room_container.setVisible(show_rooms)
+        
+        # Only show structures if they exist and rooms are enabled
+        has_structures = self.structure_layout.count() > 0
+        self.structure_container.setVisible(show_rooms and has_structures)
+        
         self.item_container.setVisible(show_items)
