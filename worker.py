@@ -12,6 +12,7 @@ try:
     import torch.nn as nn
     from floortrans.models.hg_furukawa_original import hg_furukawa_original
     from floortrans.post_prosessing import split_prediction, get_polygons
+    from floortrans.plotting import polygons_to_image
 except ImportError as e:
     print(f"Error importing CubiCasa modules: {e}")
     print("Ensure main.py is running from the root of the CubiCasa5k repository.")
@@ -125,8 +126,8 @@ class CubiCasaWorker(QThread):
             print("Processing visual output layers...")
             pred_np = pred.cpu().numpy()[0]
             
-            # --- Helper to create transparent RGBA overlay ---
-            def create_overlay(segmentation_map, colors, start_idx=1):
+            # Helper to create transparent RGBA overlay
+            def create_overlay(segmentation_map, colors, start_idx=1, smoothing=True):
                 # Upscale first for better smoothing resolution
                 overlay = np.zeros((height, width, 4), dtype=np.uint8)
                 
@@ -137,11 +138,12 @@ class CubiCasaWorker(QThread):
                     mask = (segmentation_map == i).astype(np.uint8) * 255
                     mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
                     
-                    # --- SMOOTHING THE VISUAL MASK ---
-                    # 1. Blur the mask to soften edges
-                    mask = cv2.GaussianBlur(mask, (7, 7), 0)
-                    # 2. Re-threshold to sharpen the edges back up but with smoother curves
-                    _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+                    if smoothing:
+                        # --- SMOOTHING THE VISUAL MASK ---
+                        # 1. Blur the mask to soften edges
+                        mask = cv2.GaussianBlur(mask, (7, 7), 0)
+                        # 2. Re-threshold to sharpen the edges back up but with smoother curves
+                        _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
                     
                     if np.any(mask):
                         overlay[mask > 0, 0:3] = colors[i]
@@ -167,41 +169,79 @@ class CubiCasaWorker(QThread):
 
             try:
                 # A. Use Native CubiCasa functions if possible
-                heatmaps, rooms, icons = split_prediction(pred)
-                pol_rooms, pol_icons = get_polygons((heatmaps, rooms, icons), 0.2, [height, width])
+                split = [21, 12, 11] # Standard CubiCasa5k split
+                heatmaps, rooms, icons = split_prediction(pred, [height, width], split)
+                # get_polygons returns: polygons, types, room_polygons, room_types
+                # Note: threshold 0.4 and all_opening_types=[1, 2] based on eval.py usage
+                polygons, types, room_polygons, room_types = get_polygons((heatmaps, rooms, icons), 0.4, [1, 2])
                 
-                # Structure Room Data
-                for poly in pol_rooms:
-                    class_idx = int(poly[0])
-                    points = poly[1]
+                # --- Generate Clean Vector-Based Segmentation Maps ---
+                print("Rasterizing vector polygons for clean output...")
+                pol_room_seg, pol_icon_seg = polygons_to_image(polygons, types, room_polygons, room_types, height, width)
+                
+                # Update visual layers to use the clean vector masks (disable smoothing)
+                room_layer = create_overlay(pol_room_seg, room_colors, start_idx=1, smoothing=False)
+                item_layer = create_overlay(pol_icon_seg, icon_colors, start_idx=1, smoothing=False)
+
+                # Structure Room Data from Vector Polygons
+                # room_polygons contains shapely Polygon objects
+                for i, poly in enumerate(room_polygons):
+                    class_idx = room_types[i]['class']
                     label_name = constants.ROOM_CLASSES[class_idx] if 0 <= class_idx < len(constants.ROOM_CLASSES) else "Unknown"
                     
-                    # Calculate pixel area using Shoelace formula
-                    area_px = 0.5 * np.abs(np.dot(points[:, 0], np.roll(points[:, 1], 1)) - np.dot(points[:, 1], np.roll(points[:, 0], 1)))
-                    
-                    boq_data["rooms"].append({
-                        "class_id": class_idx,
-                        "label": label_name,
-                        "area_pixels": float(area_px),
-                        "points": points.tolist() 
-                    })
+                    try:
+                        # Handle MultiPolygons by splitting them into individual Polygons
+                        polys_to_process = []
+                        if hasattr(poly, 'geoms'):
+                            polys_to_process.extend(poly.geoms)
+                        else:
+                            polys_to_process.append(poly)
 
-                # Structure Icon Data
-                for poly in pol_icons:
-                    class_idx = int(poly[0])
-                    points = poly[1]
-                    label_name = constants.ICON_CLASSES[class_idx] if 0 <= class_idx < len(constants.ICON_CLASSES) else "Unknown"
-                    
-                    boq_data["icons"].append({
-                        "class_id": class_idx,
-                        "label": label_name,
-                        "points": points.tolist()
-                    })
+                        for subnet_poly in polys_to_process:
+                            # Extract coordinates from shapely Polygon
+                            if hasattr(subnet_poly, 'exterior'):
+                                points = np.array(subnet_poly.exterior.coords)
+                            else:
+                                # Fallback if it's already a clean numpy array or lists
+                                points = np.array(subnet_poly)
+                                
+                            # Calculate pixel area
+                            if hasattr(subnet_poly, 'area'):
+                                area_px = subnet_poly.area
+                            else:
+                                # Fallback shoelace
+                                area_px = 0.5 * np.abs(np.dot(points[:, 0], np.roll(points[:, 1], 1)) - np.dot(points[:, 1], np.roll(points[:, 0], 1)))
+
+                            boq_data["rooms"].append({
+                                "class_id": int(class_idx),
+                                "label": label_name,
+                                "area_pixels": float(area_px),
+                                "points": points.tolist() 
+                            })
+                    except Exception as e:
+                        print(f"Error processing room polygon {i}: {e}")
+
+                # Structure Icon Data from Vector Polygons
+                # polygons contains numpy arrays [[x, y], ...]
+                for i, poly in enumerate(polygons):
+                    type_info = types[i]
+                    # We only care about icons here, types contains walls/icons/openings
+                    if type_info['type'] == 'icon':
+                        class_idx = type_info['class']
+                        label_name = constants.ICON_CLASSES[class_idx] if 0 <= class_idx < len(constants.ICON_CLASSES) else "Unknown"
+                        
+                        boq_data["icons"].append({
+                            "class_id": int(class_idx),
+                            "label": label_name,
+                            "points": poly.tolist()
+                        })
                     
             except Exception as e:
                 print(f"Native polygon extraction failed: {e}. Using OpenCV fallback.")
+                import traceback
+                traceback.print_exc()
                 
-                # Process Rooms
+                # Process Rooms (Fallback)
                 for i in range(1, len(constants.ROOM_CLASSES)):
                     mask = ((room_seg == i).astype(np.uint8)) * 255
                     mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
@@ -226,7 +266,7 @@ class CubiCasaWorker(QThread):
                                 "points": approx.squeeze().tolist()
                             })
 
-                # Process Icons
+                # Process Icons (Fallback)
                 for i in range(1, len(constants.ICON_CLASSES)):
                     mask = ((icon_seg == i).astype(np.uint8)) * 255
                     mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
