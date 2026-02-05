@@ -14,6 +14,7 @@ class DocumentViewer(QWidget):
     def __init__(self, file_path):
         super().__init__()
         self.file_path = file_path
+        self.json_data_path = None
         self.original_pixmap = None
         self.room_pixmap = None
         self.item_pixmap = None
@@ -366,6 +367,7 @@ class DocumentViewer(QWidget):
     def set_overlays(self, room_path, item_path, json_data_path=None):
         self.room_pixmap = QPixmap(room_path)
         self.item_pixmap = QPixmap(item_path)
+        self.json_data_path = json_data_path
         
         if json_data_path and os.path.exists(json_data_path):
             try:

@@ -259,18 +259,27 @@ class PDFViewerApp(QMainWindow):
             # Isolate chat to this specific viewer
             self.chat_panel.set_active_viewer(viewer)
 
+            if viewer.has_analysis_data and viewer.json_data_path:
+                import json
+                try:
+                    with open(viewer.json_data_path, 'r') as f:
+                        boq_data = json.load(f)
+                    self.legend.refresh_legend(boq_data)
+                    self.legend.set_visibility(viewer.show_rooms, viewer.show_items)
+                except:
+                    pass 
+            else:
+                # If no data, clear the legend
+                self.legend.refresh_legend({"rooms": [], "icons": []})
+                self.legend.set_visibility(False, False)
+
             # --- Right Pane Logic ---
             if viewer.has_analysis_data:
-                # Show Toggles
                 self.toggle_container.show()
-                # Ensure legend is updated
-                self.legend.set_visibility(True, True)
             else:
-                # No data: Hide toggles, force Chat view
                 self.toggle_container.hide()
-                self.right_stack.setCurrentIndex(0) # Chat
+                self.right_stack.setCurrentIndex(0) 
                 self.btn_show_chat.setChecked(True)
-                self.legend.set_visibility(False, False)
             
             if viewer.pixel_to_unit_ratio is not None:
                 self.btn_measure.setText("Re-calibrate Scale")
@@ -375,24 +384,33 @@ class PDFViewerApp(QMainWindow):
 
     @Slot(str, str, str)
     def on_analysis_finished(self, room_path, item_path, json_path):
+        import json # Ensure json is imported
         viewer = self.tabs.currentWidget()
         if isinstance(viewer, DocumentViewer):
             viewer.set_overlays(room_path, item_path, json_path)
+            
+            # Load BOQ data and refresh legend
+            try:
+                with open(json_path, 'r') as f:
+                    boq_data = json.load(f)
+                self.legend.refresh_legend(boq_data) # Populate only present items
+            except Exception as e:
+                print(f"Failed to load BOQ data for legend: {e}")
+
             rooms_checked = self.btn_rooms.isChecked()
             items_checked = self.btn_items.isChecked()
             viewer.toggle_layers(rooms_checked, items_checked)
             self.legend.set_visibility(rooms_checked, items_checked)
             self.temp_files.extend([room_path, item_path, json_path])
             
-            # --- Right Pane Logic on Finish ---
+            # Right Pane Logic on Finish
             self.toggle_container.show()
-            self.right_stack.setCurrentIndex(1)
+            self.right_stack.setCurrentIndex(1) # Switch to Legend automatically
             self.btn_show_legend.setChecked(True)
 
         self.btn_rooms.setEnabled(True)
         self.btn_items.setEnabled(True)
-        self.status_label.setText(f"Analysis Complete.\nData saved to: {os.path.basename(json_path)}")
-        QMessageBox.information(self, "Success", f"Analysis and Contour Extraction complete.\nRaw data saved to {json_path}")
+        self.status_label.setText(f"Analysis Complete.")
 
     @Slot(str)
     def on_analysis_error(self, err_msg):
