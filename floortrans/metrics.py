@@ -124,7 +124,25 @@ def polygons_to_tensor(polygons_val, types_val, room_polygons_val, room_types_va
         else:
             d = 0
         jj, ii = draw.polygon(polygons_val[i][:, 1], polygons_val[i][:, 0])
-        ten[pol_type['class'] + d][jj, ii] = 1
+        cls_idx = pol_type['class'] + d
+
+        # class bounds
+        if cls_idx < 0 or cls_idx >= ten.shape[0]:
+            continue
+
+        # jj and ii are ARRAYS → create a mask
+        valid = (
+            (jj >= 0) & (jj < ten.shape[1]) &
+            (ii >= 0) & (ii < ten.shape[2])
+        )
+
+        # If nothing is valid, skip
+        if not valid.any():
+            continue
+
+        ten[cls_idx, jj[valid], ii[valid]] = 1
+
+
 
     return ten
 

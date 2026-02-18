@@ -15,28 +15,40 @@ try:
     from floortrans.plotting import polygons_to_image
 except ImportError as e:
     print(f"Error importing CubiCasa modules: {e}")
-    print("Ensure main.py is running from the root of the CubiCasa5k repository.")
     torch = None
 
-# --- EasyOCR Setup (Optional/Placeholder) ---
+# --- EasyOCR Setup ---
 import easyocr
-try:
-    print("Loading EasyOCR model...")
-    EASYOCR_READER = easyocr.Reader(['en'], gpu=torch.cuda.is_available() if torch else False)
-    _HAS_EASYOCR = True
-    print("EasyOCR loaded successfully.")
-except Exception as e:
-    EASYOCR_READER = None
-    _HAS_EASYOCR = False
-    print(f"Failed to load EasyOCR. OCR will be disabled: {e}")
+EASYOCR_READER = None
+_HAS_EASYOCR = False
+
+def init_easyocr():
+    global EASYOCR_READER, _HAS_EASYOCR
+    if _HAS_EASYOCR and EASYOCR_READER is not None:
+        return
+
+    try:
+        print("--- Initializing EasyOCR ---")
+        use_gpu = False
+        if torch and torch.cuda.is_available():
+            print(f"CUDA Detected: {torch.cuda.get_device_name(0)}")
+            use_gpu = True
+        else:
+            print("CUDA NOT detected. Using CPU.")
+            
+        EASYOCR_READER = easyocr.Reader(['en'], gpu=use_gpu)
+        _HAS_EASYOCR = True
+        print("EasyOCR loaded successfully.")
+    except Exception as e:
+        print(f"Failed to load EasyOCR: {e}")
+        _HAS_EASYOCR = False
 
 class CubiCasaWorker(QThread):
     """
-    Background thread to run CubiCasa5k inference.
-    Generates separate transparent layers for Rooms and Items.
-    Also extracts contours (polygons) for BOQ generation.
+    Standard CubiCasa analysis (Rooms/Items/Polygons).
+    OCR has been removed from here.
     """
-    finished = Signal(str, str, str)  # (room_layer_path, item_layer_path, json_data_path)
+    finished = Signal(str, str, str)  # room_path, item_path, json_path
     error = Signal(str)
 
     def __init__(self, image_path, scale_ratio=1.0, model_path="model_best_val_loss_var.pkl"):
@@ -44,34 +56,6 @@ class CubiCasaWorker(QThread):
         self.image_path = image_path
         self.scale_ratio = scale_ratio
         self.model_path = model_path
-
-    def snap_to_90(points):
-        """
-        Snaps polygon points to 0, 90, 180, or 270 degrees.
-        Ensures the resulting polygon is 'Manhattan-style'.
-        """
-        if len(points) < 3:
-            return points
-
-        snapped_points = []
-        for i in range(len(points)):
-            p1 = points[i]
-            p2 = points[(i + 1) % len(points)] # Next point (looping)
-            
-            dx = p2[0] - p1[0]
-            dy = p2[1] - p1[1]
-            
-            # Determine if the line is more horizontal or vertical
-            if abs(dx) > abs(dy):
-                # Snap to horizontal: keep y constant
-                snapped_points.append([p1[0], p1[1]])
-                p2[1] = p1[1] 
-            else:
-                # Snap to vertical: keep x constant
-                snapped_points.append([p1[0], p1[1]])
-                p2[0] = p1[0]
-                
-        return np.array(snapped_points)
 
     def run(self):
         if not torch:
@@ -84,32 +68,23 @@ class CubiCasaWorker(QThread):
 
         try:
             print("--- Starting CubiCasa Analysis ---")
-            
-            # 1. Load and Preprocess Image
             fplan = cv2.imread(self.image_path)
             if fplan is None:
                 self.error.emit("Could not read image file.")
                 return
                 
             fplan = cv2.cvtColor(fplan, cv2.COLOR_BGR2RGB)
-            original_shape = fplan.shape[:2] # H, W
-            height, width = original_shape
+            height, width = fplan.shape[:2]
             
-            # Normalize [-1, 1]
+            # Normalize
             img_norm = 2 * (fplan / 255.0) - 1
-            img_norm = np.moveaxis(img_norm, -1, 0) # HWC -> CHW
+            img_norm = np.moveaxis(img_norm, -1, 0)
             input_tensor = torch.tensor(img_norm).float().unsqueeze(0)
 
-            # 2. Load Model
-            print("Initializing model architecture...")
+            # Load Model
             model = hg_furukawa_original(44)
-            
-            print(f"Loading weights from {self.model_path}...")
             checkpoint = torch.load(self.model_path, map_location='cpu')
-            if 'model_state' in checkpoint:
-                state_dict = checkpoint['model_state']
-            else:
-                state_dict = checkpoint
+            state_dict = checkpoint['model_state'] if 'model_state' in checkpoint else checkpoint
             model.load_state_dict(state_dict)
             
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -117,202 +92,77 @@ class CubiCasaWorker(QThread):
             input_tensor = input_tensor.to(device)
             model.eval()
 
-            # 3. Inference
-            print("Running model inference...")
             with torch.no_grad():
                 pred = model(input_tensor)
 
-            # 4. Post-processing (Visual Layers)
-            print("Processing visual output layers...")
             pred_np = pred.cpu().numpy()[0]
             
-            # Helper to create transparent RGBA overlay
+            # Helper: Create Overlay
             def create_overlay(segmentation_map, colors, start_idx=1, smoothing=True):
-                # Upscale first for better smoothing resolution
                 overlay = np.zeros((height, width, 4), dtype=np.uint8)
-                
                 for i in range(start_idx, len(colors)):
                     if i >= len(colors): break
-                    
-                    # Create a binary mask for this class and resize to original image size
                     mask = (segmentation_map == i).astype(np.uint8) * 255
                     mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
-                    
                     if smoothing:
-                        # --- SMOOTHING THE VISUAL MASK ---
-                        # 1. Blur the mask to soften edges
                         mask = cv2.GaussianBlur(mask, (7, 7), 0)
-                        # 2. Re-threshold to sharpen the edges back up but with smoother curves
                         _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
-                    
                     if np.any(mask):
                         overlay[mask > 0, 0:3] = colors[i]
                         overlay[mask > 0, 3] = 140 
-                        
                 return overlay
 
             room_colors, icon_colors = constants.get_class_colors()
 
-            # Rooms
+            # Initial Visual Layers (Rough)
             room_pred = pred_np[21:33]
             room_seg = np.argmax(room_pred, axis=0)
             room_layer = create_overlay(room_seg, room_colors, start_idx=1)
 
-            # Items
             icon_pred = pred_np[33:44]
             icon_seg = np.argmax(icon_pred, axis=0)
             item_layer = create_overlay(icon_seg, icon_colors, start_idx=1)
 
-            # 5. Contour Extraction (The Logic Layer for BOQ)
-            print("Extracting contours (Polygons) for BOQ...")
             boq_data = {"rooms": [], "icons": []}
 
+            # Polygon Extraction
             try:
-                # A. Use Native CubiCasa functions if possible
-                split = [21, 12, 11] # Standard CubiCasa5k split
+                split = [21, 12, 11]
                 heatmaps, rooms, icons = split_prediction(pred, [height, width], split)
-                # get_polygons returns: polygons, types, room_polygons, room_types
-                # Note: threshold 0.4 and all_opening_types=[1, 2] based on eval.py usage
                 polygons, types, room_polygons, room_types = get_polygons((heatmaps, rooms, icons), 0.4, [1, 2])
                 
-                # --- Generate Clean Vector-Based Segmentation Maps ---
-                print("Rasterizing vector polygons for clean output...")
+                # Rasterize Vectors for clean layers
                 pol_room_seg, pol_icon_seg = polygons_to_image(polygons, types, room_polygons, room_types, height, width)
-                
-                # Update visual layers to use the clean vector masks (disable smoothing)
                 room_layer = create_overlay(pol_room_seg, room_colors, start_idx=1, smoothing=False)
                 item_layer = create_overlay(pol_icon_seg, icon_colors, start_idx=1, smoothing=False)
 
-                # Structure Room Data from Vector Polygons
-                # room_polygons contains shapely Polygon objects
+                # Process Rooms
                 for i, poly in enumerate(room_polygons):
                     class_idx = room_types[i]['class']
                     label_name = constants.ROOM_CLASSES[class_idx] if 0 <= class_idx < len(constants.ROOM_CLASSES) else "Unknown"
-                    
                     try:
-                        # Handle MultiPolygons by splitting them into individual Polygons
-                        polys_to_process = []
-                        if hasattr(poly, 'geoms'):
-                            polys_to_process.extend(poly.geoms)
-                        else:
-                            polys_to_process.append(poly)
-
+                        polys_to_process = poly.geoms if hasattr(poly, 'geoms') else [poly]
                         for subnet_poly in polys_to_process:
-                            # Extract coordinates from shapely Polygon
-                            if hasattr(subnet_poly, 'exterior'):
-                                points = np.array(subnet_poly.exterior.coords)
-                            else:
-                                # Fallback if it's already a clean numpy array or lists
-                                points = np.array(subnet_poly)
-                                
-                            # Calculate pixel area
-                            if hasattr(subnet_poly, 'area'):
-                                area_px = subnet_poly.area
-                            else:
-                                # Fallback shoelace
-                                area_px = 0.5 * np.abs(np.dot(points[:, 0], np.roll(points[:, 1], 1)) - np.dot(points[:, 1], np.roll(points[:, 0], 1)))
-
+                            points = np.array(subnet_poly.exterior.coords if hasattr(subnet_poly, 'exterior') else subnet_poly)
+                            area_px = subnet_poly.area if hasattr(subnet_poly, 'area') else 0.0
                             boq_data["rooms"].append({
-                                "class_id": int(class_idx),
-                                "label": label_name,
-                                "area_pixels": float(area_px),
-                                "points": points.tolist() 
+                                "class_id": int(class_idx), "label": label_name, 
+                                "area_pixels": float(area_px), "points": points.tolist() 
                             })
-                    except Exception as e:
-                        print(f"Error processing room polygon {i}: {e}")
+                    except: pass
 
-                # Structure Icon Data from Vector Polygons
-                # polygons contains numpy arrays [[x, y], ...]
+                # Process Icons
                 for i, poly in enumerate(polygons):
                     type_info = types[i]
-                    type_str = type_info.get('type', '')
-                    
-                    # Determine if it's an Icon or Structure (Wall/Railing)
-                    # Note: CubiCasa might label Walls as type='wall' or similar. 
-                    # We check the class index to be sure.
                     class_idx = type_info['class']
-                    
-                    # Check if it's a target type we missed previously
-                    is_icon = (type_str == 'icon')
-                    # We also want to capture Walls (class 2) and Railings (class 8) if they appear here
-                    # Usually "Wall" is class 2 in ROOM_CLASSES, but might appear in this list if it's a thin structure
-                    is_structure = False
-                    label_name = "Unknown"
-                    
-                    if is_icon:
+                    if type_info.get('type', '') == 'icon':
                         label_name = constants.ICON_CLASSES[class_idx] if 0 <= class_idx < len(constants.ICON_CLASSES) else "Unknown"
-                        boq_data["icons"].append({
-                            "class_id": int(class_idx),
-                            "label": label_name,
-                            "points": poly.tolist()
-                        })
-                    else:
-                        # Check if it maps to a Room Class (like Wall/Railing)
-                        # We use ROOM_CLASSES for checking name
-                        if 0 <= class_idx < len(constants.ROOM_CLASSES):
-                            pot_name = constants.ROOM_CLASSES[class_idx]
-                            if pot_name in ["Wall", "Railing"]:
-                                is_structure = True
-                                label_name = pot_name
-                        
-                        if is_structure:
-                             # Add to 'rooms' list because our Legend expects them there (and they share Room colors)
-                             # Calculate area if possible, though for linear walls it might be small
-                            area_px = 0.0
-                            if len(poly) >= 3:
-                                area_px = 0.5 * np.abs(np.dot(poly[:, 0], np.roll(poly[:, 1], 1)) - np.dot(poly[:, 1], np.roll(poly[:, 0], 1)))
-
-                            boq_data["rooms"].append({
-                                "class_id": int(class_idx),
-                                "label": label_name,
-                                "area_pixels": float(area_px),
-                                "points": poly.tolist(),
-                                "is_structure": True # Flag to help differentiate if needed
-                            })
+                        boq_data["icons"].append({"class_id": int(class_idx), "label": label_name, "points": poly.tolist()})
                     
             except Exception as e:
-                print(f"Native polygon extraction failed: {e}. Using OpenCV fallback.")
-                import traceback
-                traceback.print_exc()
-                
-                # Process Rooms (Fallback)
-                for i in range(1, len(constants.ROOM_CLASSES)):
-                    mask = ((room_seg == i).astype(np.uint8)) * 255
-                    mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
-                    
-                    # Optional: Morphological Opening to remove small artifacts/noise
-                    kernel = np.ones((5,5), np.uint8)
-                    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-                    
-                    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                    
-                    for cnt in contours:
-                        area = cv2.contourArea(cnt)
-                        if area > 500: 
-                            # Adjust 0.01 to 0.02 for more aggressive smoothing.
-                            epsilon = 0.01 * cv2.arcLength(cnt, True)
-                            approx = cv2.approxPolyDP(cnt, epsilon, True)
-                            
-                            boq_data["rooms"].append({
-                                "class_id": i,
-                                "label": constants.ROOM_CLASSES[i],
-                                "area_pixels": float(area),
-                                "points": approx.squeeze().tolist()
-                            })
+                print(f"Polygon extraction error: {e}")
 
-                # Process Icons (Fallback)
-                for i in range(1, len(constants.ICON_CLASSES)):
-                    mask = ((icon_seg == i).astype(np.uint8)) * 255
-                    mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
-                    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                    for cnt in contours:
-                        boq_data["icons"].append({
-                            "class_id": i,
-                            "label": constants.ICON_CLASSES[i],
-                            "points": cnt.squeeze().tolist()
-                        })
-
-            # 6. Save Outputs
+            # Save
             base_name = os.path.splitext(os.path.basename(self.image_path))[0]
             room_path = f"temp_{base_name}_rooms.png"
             item_path = f"temp_{base_name}_items.png"
@@ -324,10 +174,130 @@ class CubiCasaWorker(QThread):
             with open(json_path, 'w') as f:
                 json.dump(boq_data, f, indent=4)
             
-            print(f"Analysis Saved: {room_path}, {item_path}")
-            print(f"Data JSON Saved: {json_path}")
-            
             self.finished.emit(room_path, item_path, json_path)
+
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class OCRWorker(QThread):
+    """
+    Dedicated worker for Multi-directional OCR.
+    Includes Non-Maximum Suppression to remove duplicates.
+    Generates a dedicated transparent layer.
+    """
+    finished = Signal(str, list) # (layer_path, data_list)
+    error = Signal(str)
+
+    def __init__(self, image_path):
+        super().__init__()
+        self.image_path = image_path
+
+    def calculate_iou(self, boxA, boxB):
+        # determine the (x, y)-coordinates of the intersection rectangle
+        xA = max(boxA[0], boxB[0])
+        yA = max(boxA[1], boxB[1])
+        xB = min(boxA[2], boxB[2])
+        yB = min(boxA[3], boxB[3])
+
+        interArea = max(0, xB - xA + 1) * max(0, yB - yA + 1)
+        boxAArea = (boxA[2] - boxA[0] + 1) * (boxA[3] - boxA[1] + 1)
+        boxBArea = (boxB[2] - boxB[0] + 1) * (boxB[3] - boxB[1] + 1)
+
+        iou = interArea / float(boxAArea + boxBArea - interArea)
+        return iou
+
+    def run(self):
+        init_easyocr()
+        if not _HAS_EASYOCR:
+            self.error.emit("EasyOCR not available.")
+            return
+
+        try:
+            print("--- Starting On-Demand OCR ---")
+            img = cv2.imread(self.image_path)
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            height, width = img.shape[:2]
+            
+            candidates = []
+
+            # 1. Multi-directional Scan
+            rotations = [
+                ("0", None, lambda x,y,w,h: (x, y)),
+                ("90", cv2.ROTATE_90_CLOCKWISE, lambda x,y,w,h: (y, h-x)),
+                ("180", cv2.ROTATE_180, lambda x,y,w,h: (w-x, h-y)),
+                ("270", cv2.ROTATE_90_COUNTERCLOCKWISE, lambda x,y,w,h: (w-y, x))
+            ]
+
+            for angle_name, rot_code, trans_func in rotations:
+                scan_img = cv2.rotate(img, rot_code) if rot_code is not None else img
+                results = EASYOCR_READER.readtext(scan_img)
+                
+                for (bbox, text, prob) in results:
+                    if prob < 0.50: continue # User requested > 50% only
+
+                    # Transform back to global coords
+                    clean_bbox = []
+                    for p in bbox:
+                        ox, oy = trans_func(p[0], p[1], width, height)
+                        clean_bbox.append([int(ox), int(oy)])
+                    
+                    # Convert to rect [x1, y1, x2, y2] for IOU check
+                    pts = np.array(clean_bbox)
+                    x_min, y_min = np.min(pts, axis=0)
+                    x_max, y_max = np.max(pts, axis=0)
+
+                    candidates.append({
+                        "text": text,
+                        "conf": prob,
+                        "poly": clean_bbox,
+                        "rect": [x_min, y_min, x_max, y_max],
+                        "angle": angle_name
+                    })
+
+            # 2. Non-Maximum Suppression (Deduplication)
+            # Sort by confidence descending
+            candidates.sort(key=lambda x: x["conf"], reverse=True)
+            final_results = []
+            
+            while candidates:
+                best = candidates.pop(0)
+                final_results.append(best)
+                
+                # Compare best against all remaining to find duplicates
+                remaining = []
+                for other in candidates:
+                    iou = self.calculate_iou(best["rect"], other["rect"])
+                    # If they overlap significantly (> 20%), assume they are the same text
+                    # Since 'best' has higher confidence, we keep 'best' and discard 'other'
+                    if iou < 0.20:
+                        remaining.append(other)
+                candidates = remaining
+
+            # 3. Create Visual Layer
+            ocr_layer = np.zeros((height, width, 4), dtype=np.uint8)
+            
+            for item in final_results:
+                pts = np.array(item["poly"], dtype=np.int32)
+                x, y, w, h = cv2.boundingRect(pts)
+                
+                # Visual style: Black text with white glow
+                text_str = item["text"]
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                scale = 0.6
+                thickness = 2
+                
+                # White Outline
+                cv2.putText(ocr_layer, text_str, (x, y), font, scale, (255, 255, 255, 255), thickness + 3, cv2.LINE_AA)
+                # Black Text
+                cv2.putText(ocr_layer, text_str, (x, y), font, scale, (0, 0, 0, 255), thickness, cv2.LINE_AA)
+
+            # 4. Save
+            base_name = os.path.splitext(os.path.basename(self.image_path))[0]
+            layer_path = f"temp_{base_name}_ocr_layer.png"
+            cv2.imwrite(layer_path, cv2.cvtColor(ocr_layer, cv2.COLOR_RGBA2BGRA))
+            
+            self.finished.emit(layer_path, final_results)
 
         except Exception as e:
             import traceback
