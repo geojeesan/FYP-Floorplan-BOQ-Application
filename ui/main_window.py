@@ -17,6 +17,8 @@ from .chat import AIChatPanel
 
 # Import from parent directory
 from worker import CubiCasaWorker, OCRWorker
+import constants
+from shapely.geometry import Point, Polygon as ShapelyPolygon
 
 class PDFViewerApp(QMainWindow):
     def __init__(self):
@@ -77,8 +79,9 @@ class PDFViewerApp(QMainWindow):
         self.legend_scroll = QScrollArea()
         self.legend_scroll.setWidgetResizable(True)
         self.legend = LegendWidget()
-        # Connect the OCR Signal!
+        # Connect the OCR Signals
         self.legend.ocrRequested.connect(self.on_ocr_requested)
+        self.legend.ocrLabelsToggled.connect(self.on_toggle_ocr_labels)
         
         self.legend_scroll.setWidget(self.legend)
         self.right_stack.addWidget(self.legend_scroll)
@@ -306,6 +309,7 @@ class PDFViewerApp(QMainWindow):
         if is_checked:
             self.status_label.setText("Running OCR (Scanning 4 angles)...")
             self.legend.btn_ocr.setEnabled(False) # Disable until done
+            self.legend.show_progress() # Show progress bar
             
             self.ocr_worker = OCRWorker(viewer.file_path)
             self.ocr_worker.finished.connect(self.on_ocr_finished)
@@ -317,9 +321,30 @@ class PDFViewerApp(QMainWindow):
     @Slot(str, list)
     def on_ocr_finished(self, layer_path, data_list):
         viewer = self.tabs.currentWidget()
+        self.legend.hide_progress() # Hide progress bar
+        
         if isinstance(viewer, DocumentViewer):
             viewer.set_ocr_layer(layer_path)
             self.temp_files.append(layer_path)
+            
+            # --- Match OCR to Rooms ---
+            if viewer.has_analysis_data and viewer.boq_data:
+                print(f"Matching {len(data_list)} OCR items to rooms...")
+                updated_boq = self.match_text_to_rooms(viewer.boq_data, data_list)
+                viewer.boq_data = updated_boq
+                
+                # Save updated JSON
+                if viewer.json_data_path:
+                    import json
+                    try:
+                        with open(viewer.json_data_path, 'w') as f:
+                            json.dump(updated_boq, f, indent=4)
+                    except Exception as e:
+                        print(f"Error saving matching JSON: {e}")
+                
+            # Enable the toggle
+            self.legend.btn_toggle_ocr_labels.setVisible(True)
+            self.legend.btn_toggle_ocr_labels.setChecked(False)
         
         self.legend.btn_ocr.setEnabled(True)
         self.legend.btn_ocr.setChecked(True)
@@ -327,10 +352,96 @@ class PDFViewerApp(QMainWindow):
 
     @Slot(str)
     def on_ocr_error(self, err_msg):
+        self.legend.hide_progress()
         self.legend.btn_ocr.setEnabled(True)
         self.legend.btn_ocr.setChecked(False)
         self.status_label.setText(f"OCR Failed: {err_msg}")
         QMessageBox.warning(self, "OCR Error", err_msg)
+
+    def match_text_to_rooms(self, boq_data, ocr_results):
+        if not ocr_results: return boq_data
+
+        import numpy as np
+        # room_polys = []
+        # for i, room in enumerate(boq_data.get('rooms', [])):
+        #     pts = room.get('points', [])
+        #     if len(pts) >= 3:
+        #         try:
+        #             poly = ShapelyPolygon(pts)
+        #             room_polys.append((i, poly))
+        #         except: pass
+
+        # Perform checking
+        # 1. Prepare Room Polygons
+        rooms_with_poly = []
+        for i, room in enumerate(boq_data.get('rooms', [])):
+            pts = room.get('points', [])
+            if len(pts) >= 3:
+                try:
+                    poly = ShapelyPolygon(pts)
+                    rooms_with_poly.append((i, poly))
+                except: pass
+        
+        # 2. Check Overlaps
+        for item in ocr_results:
+            rect = item.get('rect') # [x1, y1, x2, y2]
+            if not rect: continue
+            cx = (rect[0] + rect[2]) / 2
+            cy = (rect[1] + rect[3]) / 2
+            p = Point(cx, cy)
+            
+            for idx, poly in rooms_with_poly:
+                if poly.contains(p):
+                    # Found match
+                    text = item.get('text', '').strip()
+                    
+                    # --- Rules ---
+                    # 1. Ignore if it's just a number (e.g. "45", "12.5") without unit
+                    import re
+                    # Regex checks if string is purely numeric (int or float)
+                    if re.match(r'^\d+(\.\d+)?$', text):
+                        continue
+                        
+                    # 2. Replace JM -> WC
+                    if text == "JM":
+                        text = "WC"
+                        
+                    current_ocr = boq_data['rooms'][idx].get('ocr_text', '')
+                    
+                    if current_ocr:
+                        # Append if not already there
+                        if text not in current_ocr:
+                            boq_data['rooms'][idx]['ocr_text'] = current_ocr + " " + text
+                    else:
+                        boq_data['rooms'][idx]['ocr_text'] = text
+                        
+        return boq_data
+
+    def on_toggle_ocr_labels(self, is_checked):
+        viewer = self.tabs.currentWidget()
+        if not isinstance(viewer, DocumentViewer) or not viewer.has_analysis_data: return
+        
+        boq = viewer.boq_data
+        if not boq: return
+
+        # Update labels in-place
+        for room in boq.get('rooms', []):
+            cid = room.get('class_id', -1)
+            original_label = constants.ROOM_CLASSES[cid] if 0 <= cid < len(constants.ROOM_CLASSES) else "Unknown"
+            
+            if is_checked:
+                ocr_txt = room.get('ocr_text', None)
+                if ocr_txt and len(ocr_txt) > 0:
+                    room['label'] = ocr_txt
+                else:
+                    room['label'] = original_label
+            else:
+                room['label'] = original_label
+        
+        # Refresh Legend
+        self.legend.refresh_legend(boq)
+        # Refresh Viewer (Canvas)
+        viewer.update_view()
 
     # ... (rest of methods: measure, toggle_interaction_mode, etc. unchanged)
     def on_measure_clicked(self):

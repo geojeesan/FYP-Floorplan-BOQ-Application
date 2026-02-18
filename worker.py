@@ -19,6 +19,7 @@ except ImportError as e:
 
 # --- EasyOCR Setup ---
 import easyocr
+import re
 EASYOCR_READER = None
 _HAS_EASYOCR = False
 
@@ -28,7 +29,6 @@ def init_easyocr():
         return
 
     try:
-        print("--- Initializing EasyOCR ---")
         use_gpu = False
         if torch and torch.cuda.is_available():
             print(f"CUDA Detected: {torch.cuda.get_device_name(0)}")
@@ -38,7 +38,6 @@ def init_easyocr():
             
         EASYOCR_READER = easyocr.Reader(['en'], gpu=use_gpu)
         _HAS_EASYOCR = True
-        print("EasyOCR loaded successfully.")
     except Exception as e:
         print(f"Failed to load EasyOCR: {e}")
         _HAS_EASYOCR = False
@@ -278,19 +277,120 @@ class OCRWorker(QThread):
             ocr_layer = np.zeros((height, width, 4), dtype=np.uint8)
             
             for item in final_results:
-                pts = np.array(item["poly"], dtype=np.int32)
-                x, y, w, h = cv2.boundingRect(pts)
+                text_str = item["text"].strip()
+                rightside = True
+
+                # --- Rules ---
+                # 1. Ignore if it's just a number (e.g. "45", "12.5") without unit
+                if re.match(r'^\d+(\.\d+)?$', text_str):
+                    continue
                 
-                # Visual style: Black text with white glow
-                text_str = item["text"]
+                # 2. Replace JM -> WC
+                if text_str == "JM":
+                    text_str = "WC"
+                    rightside = False
+                
+                # Update item text for downstream use (JSON)
+                item["text"] = text_str
+
+                pts = np.array(item["poly"], dtype=np.int32)
+                rect_x, rect_y, rect_w, rect_h = cv2.boundingRect(pts)
+                center_x, center_y = rect_x + rect_w // 2, rect_y + rect_h // 2
+                
+                # Prepare Text Logic
                 font = cv2.FONT_HERSHEY_SIMPLEX
                 scale = 0.6
-                thickness = 2
+                thickness = 1
                 
-                # White Outline
-                cv2.putText(ocr_layer, text_str, (x, y), font, scale, (255, 255, 255, 255), thickness + 3, cv2.LINE_AA)
+                # Get text size
+                (t_w, t_h), baseline = cv2.getTextSize(text_str, font, scale, thickness)
+                t_h += baseline 
+
+                # Create a small canvas for the text
+                # Add some padding
+                pad = 10
+                canvas_w = t_w + pad * 2
+                canvas_h = t_h + pad * 2
+                
+                text_canvas = np.zeros((canvas_h, canvas_w, 4), dtype=np.uint8)
+                
+                # Draw text centered on canvas
+                # Text origin is bottom-left
+                org_x = pad
+                org_y = canvas_h - pad - baseline // 2
+                
                 # Black Text
-                cv2.putText(ocr_layer, text_str, (x, y), font, scale, (0, 0, 0, 255), thickness, cv2.LINE_AA)
+                cv2.putText(text_canvas, text_str, (org_x, org_y), font, scale, (0, 0, 0, 255), thickness, cv2.LINE_AA)
+
+                # Rotate Canvas if needed
+                angle = item["angle"]
+                if angle == "90":
+                    if rightside:
+                        text_canvas = cv2.rotate(text_canvas, cv2.ROTATE_90_COUNTERCLOCKWISE)
+                    else:
+                        text_canvas = cv2.rotate(text_canvas, cv2.ROTATE_90_CLOCKWISE)
+                elif angle == "180":
+                    if rightside:
+                        text_canvas = cv2.rotate(text_canvas, cv2.ROTATE_180)
+                elif angle == "270":
+                    if rightside:
+                        text_canvas = cv2.rotate(text_canvas, cv2.ROTATE_90_CLOCKWISE)
+                    else:
+                        text_canvas = cv2.rotate(text_canvas, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+                # Paste canvas onto main layer centered at (center_x, center_y)
+                cw, ch = text_canvas.shape[1], text_canvas.shape[0]
+                
+                top_left_x = center_x - cw // 2
+                top_left_y = center_y - ch // 2
+                
+                # Bounds check
+                if top_left_x < 0: top_left_x = 0
+                if top_left_y < 0: top_left_y = 0
+                
+                # Calculate slice coords
+                end_x = top_left_x + cw
+                end_y = top_left_y + ch
+                
+                # Clip width/height if it goes off screen
+                if end_x > width: end_x = width
+                if end_y > height: end_y = height
+                
+                # Adjust canvas slice if clipped
+                valid_w = end_x - top_left_x
+                valid_h = end_y - top_left_y
+                
+                if valid_w <= 0 or valid_h <= 0: continue
+                
+                # Re-calc theoretical placement
+                tl_x = center_x - cw // 2
+                tl_y = center_y - ch // 2
+                
+                start_x_layer = max(0, tl_x)
+                start_y_layer = max(0, tl_y)
+                end_x_layer = min(width, tl_x + cw)
+                end_y_layer = min(height, tl_y + ch)
+                
+                start_x_canvas = start_x_layer - tl_x
+                start_y_canvas = start_y_layer - tl_y
+                end_x_canvas = start_x_canvas + (end_x_layer - start_x_layer)
+                end_y_canvas = start_y_canvas + (end_y_layer - start_y_layer)
+                
+                if end_x_layer > start_x_layer and end_y_layer > start_y_layer:
+                    # Blend
+                    roi = ocr_layer[start_y_layer:end_y_layer, start_x_layer:end_x_layer]
+                    snippet = text_canvas[start_y_canvas:end_y_canvas, start_x_canvas:end_x_canvas]
+                    
+                    # Alpha blending
+                    # snippet has alpha channel in index 3
+                    alpha_msk = snippet[:, :, 3] / 255.0
+                    alpha_inv = 1.0 - alpha_msk
+                    
+                    for c in range(3):
+                        roi[:, :, c] = (alpha_msk * snippet[:, :, c] + alpha_inv * roi[:, :, c])
+                    roi[:, :, 3] = np.maximum(roi[:, :, 3], snippet[:, :, 3]) # Simple alpha max
+                    
+                    ocr_layer[start_y_layer:end_y_layer, start_x_layer:end_x_layer] = roi
 
             # 4. Save
             base_name = os.path.splitext(os.path.basename(self.image_path))[0]

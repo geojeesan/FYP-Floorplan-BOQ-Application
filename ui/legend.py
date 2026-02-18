@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QProgressBar
 )
 from PySide6.QtCore import Qt, Signal
 import constants
@@ -7,6 +7,7 @@ from .viewer import DocumentViewer
 
 class LegendWidget(QWidget):
     ocrRequested = Signal(bool) # Signal to Main Window: True=Show/Run, False=Hide
+    ocrLabelsToggled = Signal(bool) # Signal to use OCR text as labels
 
     def __init__(self):
         super().__init__()
@@ -46,6 +47,23 @@ class LegendWidget(QWidget):
         self.btn_ocr.setStyleSheet(self._get_ocr_btn_style(False))
         self.btn_ocr.clicked.connect(self.on_ocr_clicked)
         self.layout.addWidget(self.btn_ocr)
+
+        # --- OCR Progress Bar ---
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 0) # Indeterminate
+        self.progress_bar.setFixedHeight(10)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setVisible(False)
+        self.layout.addWidget(self.progress_bar)
+
+        # --- OCR Label Toggle ---
+        self.btn_toggle_ocr_labels = QPushButton("Show OCR Labels")
+        self.btn_toggle_ocr_labels.setCheckable(True)
+        self.btn_toggle_ocr_labels.setCursor(Qt.PointingHandCursor)
+        self.btn_toggle_ocr_labels.setVisible(False) # Hidden until OCR is done
+        self.btn_toggle_ocr_labels.setStyleSheet(self._get_btn_style(False))
+        self.btn_toggle_ocr_labels.clicked.connect(self.on_ocr_labels_toggled)
+        self.layout.addWidget(self.btn_toggle_ocr_labels)
         
         self.room_container.setVisible(False)
         self.structure_container.setVisible(False)
@@ -55,6 +73,17 @@ class LegendWidget(QWidget):
         is_checked = self.btn_ocr.isChecked()
         self.btn_ocr.setStyleSheet(self._get_ocr_btn_style(is_checked))
         self.ocrRequested.emit(is_checked)
+
+    def on_ocr_labels_toggled(self):
+        is_checked = self.btn_toggle_ocr_labels.isChecked()
+        self.btn_toggle_ocr_labels.setStyleSheet(self._get_btn_style(is_checked))
+        self.ocrLabelsToggled.emit(is_checked)
+
+    def show_progress(self):
+        self.progress_bar.setVisible(True)
+
+    def hide_progress(self):
+        self.progress_bar.setVisible(False)
 
     def _get_ocr_btn_style(self, is_selected):
         bg = "rgba(0, 200, 255, 60)" if is_selected else "transparent"
@@ -86,55 +115,85 @@ class LegendWidget(QWidget):
         self._clear_layout(self.item_layout)
         self.buttons = {}
         
-        present_rooms = {item['label'] for item in boq_data.get('rooms', [])}
-        present_icons = {item['label'] for item in boq_data.get('icons', [])}
+        # Helper to process room/icon list
+        # We need to group by (label, class_id) to handle custom OCR labels
+        # structure: { "LabelName": class_id }
+        present_rooms = {} 
+        present_structures = {}
+        present_icons = {}
 
         structure_classes = {"Wall", "Railing"}
-        room_classes_filtered = [c for c in constants.ROOM_CLASSES if c not in structure_classes]
 
-        self._add_items_to_layout(self.room_layout, room_classes_filtered, 
-                                 self.room_colors, constants.ROOM_CLASSES, present_rooms, is_room=True)
-        self._add_items_to_layout(self.structure_layout, list(structure_classes), 
-                                 self.room_colors, constants.ROOM_CLASSES, present_rooms, is_room=True, clickable=False)
-        self._add_items_to_layout(self.item_layout, constants.ICON_CLASSES, 
-                                 self.icon_colors, constants.ICON_CLASSES, present_icons, is_room=False)
+        for item in boq_data.get('rooms', []):
+            lbl = item.get('label', 'Unknown')
+            cid = item.get('class_id', -1)
+            # Check if it's a structure based on the ORIGINAL class name if possible, 
+            # or check if the current label is a structure name.
+            # Best reliance is class_id
+            
+            original_class_name = constants.ROOM_CLASSES[cid] if 0 <= cid < len(constants.ROOM_CLASSES) else "Unknown"
+            
+            if original_class_name in structure_classes:
+                present_structures[lbl] = cid
+            else:
+                present_rooms[lbl] = cid
+
+        for item in boq_data.get('icons', []):
+            lbl = item.get('label', 'Unknown')
+            cid = item.get('class_id', -1)
+            present_icons[lbl] = cid
+
+        # Sort keys for consistent display
+        room_labels = sorted(present_rooms.keys())
+        struct_labels = sorted(present_structures.keys())
+        icon_labels = sorted(present_icons.keys())
+
+        # Render
+        self._add_dynamic_items(self.room_layout, room_labels, present_rooms, self.room_colors, is_room=True)
+        self._add_dynamic_items(self.structure_layout, struct_labels, present_structures, self.room_colors, is_room=True, clickable=False)
+        self._add_dynamic_items(self.item_layout, icon_labels, present_icons, self.icon_colors, is_room=False)
         
-        has_structures = any(s in present_rooms for s in structure_classes)
-        self.structure_container.setVisible(has_structures)
+        self.structure_container.setVisible(len(struct_labels) > 0)
 
-    def _add_items_to_layout(self, layout, classes_to_show, color_map, source_classes_list, present_set, is_room, clickable=True):
-        for label_name in classes_to_show:
-            if label_name in present_set:
-                try:
-                    idx = source_classes_list.index(label_name)
-                    c = color_map[idx]
-                except ValueError: continue
+    def _add_dynamic_items(self, layout, label_list, label_map, color_palette, is_room, clickable=True):
+        """
+        label_list: list of strings (names to show)
+        label_map: dict { name: class_id }
+        color_palette: list of colors
+        """
+        for label_name in label_list:
+            class_id = label_map[label_name]
+            # Safety check on class_id
+            if 0 <= class_id < len(color_palette):
+                c = color_palette[class_id]
+            else:
+                c = (100, 100, 100) # Gray fallback
 
-                row = QWidget()
-                row_layout = QHBoxLayout(row)
-                row_layout.setContentsMargins(0, 2, 0, 2)
-                
-                color_lbl = QLabel()
-                color_lbl.setFixedSize(14, 14)
-                hex_c = f"#{c[0]:02x}{c[1]:02x}{c[2]:02x}"
-                color_lbl.setStyleSheet(f"background-color: {hex_c}; border-radius: 2px;")
-                row_layout.addWidget(color_lbl)
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 2, 0, 2)
+            
+            color_lbl = QLabel()
+            color_lbl.setFixedSize(14, 14)
+            hex_c = f"#{c[0]:02x}{c[1]:02x}{c[2]:02x}"
+            color_lbl.setStyleSheet(f"background-color: {hex_c}; border-radius: 2px;")
+            row_layout.addWidget(color_lbl)
 
-                if clickable:
-                    btn = QPushButton(label_name)
-                    btn.setCheckable(True) 
-                    btn.setCursor(Qt.PointingHandCursor)
-                    btn.setStyleSheet(self._get_btn_style(False))
-                    btn.clicked.connect(lambda checked, b=btn, n=label_name, r=is_room: self.handle_click(b, n, r))
-                    self.buttons[label_name] = btn
-                    row_layout.addWidget(btn)
-                else:
-                    lbl = QLabel(label_name)
-                    lbl.setStyleSheet("color: white; font-size: 11px; padding: 4px 8px;")
-                    row_layout.addWidget(lbl)
-                
-                row_layout.addStretch()
-                layout.addWidget(row)
+            if clickable:
+                btn = QPushButton(label_name)
+                btn.setCheckable(True) 
+                btn.setCursor(Qt.PointingHandCursor)
+                btn.setStyleSheet(self._get_btn_style(False))
+                btn.clicked.connect(lambda checked, b=btn, n=label_name, r=is_room: self.handle_click(b, n, r))
+                self.buttons[label_name] = btn
+                row_layout.addWidget(btn)
+            else:
+                lbl = QLabel(label_name)
+                lbl.setStyleSheet("color: white; font-size: 11px; padding: 4px 8px;")
+                row_layout.addWidget(lbl)
+            
+            row_layout.addStretch()
+            layout.addWidget(row)
 
     def _get_btn_style(self, is_selected):
         bg = "rgba(255, 255, 255, 60)" if is_selected else "transparent"
