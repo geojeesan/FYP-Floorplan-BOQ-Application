@@ -147,7 +147,15 @@ class PDFViewerApp(QMainWindow):
         self.btn_mode_toggle.setIcon(qta.icon('fa5s.hand-rock'))
         self.btn_mode_toggle.setToolTip("Mode: Grabber")
         self.btn_mode_toggle.clicked.connect(self.toggle_interaction_mode)
+        self.btn_mode_toggle.clicked.connect(self.toggle_interaction_mode)
         self.btn_mode_toggle.setEnabled(False)
+
+        self.btn_text = QPushButton()
+        self.btn_text.setCheckable(True)
+        self.btn_text.setIcon(qta.icon('fa5s.font'))
+        self.btn_text.setToolTip("Add Text Label")
+        self.btn_text.clicked.connect(self.toggle_text_mode)
+        self.btn_text.setEnabled(False)
 
         # Status Label - Moved to StatusBar
         self.status_label = QLabel("")
@@ -160,7 +168,9 @@ class PDFViewerApp(QMainWindow):
         # control_layout.addWidget(self.status_label) # Moved to StatusBar
         control_layout.addSpacing(10)
         control_layout.addWidget(self.btn_measure)
+        control_layout.addWidget(self.btn_measure)
         control_layout.addWidget(self.btn_mode_toggle)
+        control_layout.addWidget(self.btn_text)
         control_layout.addStretch()
 
         layout.addWidget(self.controls)
@@ -293,7 +303,9 @@ class PDFViewerApp(QMainWindow):
             # self.btn_items.blockSignals(False)
             
             self.btn_measure.setEnabled(True)
+            self.btn_measure.setEnabled(True)
             self.btn_mode_toggle.setEnabled(True)
+            self.btn_text.setEnabled(True)
 
             # Update Legend Button State for OCR
             self.legend.btn_ocr.blockSignals(True)
@@ -359,7 +371,13 @@ class PDFViewerApp(QMainWindow):
                 self.btn_mode_toggle.setChecked(False)
                 # self.btn_mode_toggle.setText("Mode: Grabber")
                 self.btn_mode_toggle.setToolTip("Mode: Grabber")
+                self.btn_mode_toggle.setToolTip("Mode: Grabber")
                 self.btn_mode_toggle.setIcon(qta.icon('fa5s.hand-rock'))
+            
+            if viewer.mode == "text":
+                self.btn_text.setChecked(True)
+            else:
+                self.btn_text.setChecked(False)
             
         else:
             # self.btn_rooms.setEnabled(False)
@@ -367,7 +385,9 @@ class PDFViewerApp(QMainWindow):
             self.legend.set_visibility(False, False)
             self.status_label.setText("")
             self.btn_measure.setEnabled(False)
+            self.btn_measure.setEnabled(False)
             self.btn_mode_toggle.setEnabled(False)
+            self.btn_text.setEnabled(False)
             self.thumbnail_scroll.hide()
             
             self.btn_analyse.hide()
@@ -466,6 +486,14 @@ class PDFViewerApp(QMainWindow):
             
             # --- Match OCR to Rooms ---
             if viewer.has_analysis_data and viewer.boq_data:
+                
+                # Combine OCR results with Manual Text
+                if hasattr(viewer, 'get_manual_text_data'):
+                     manual_data = viewer.get_manual_text_data()
+                     if manual_data:
+                         print(f"Adding {len(manual_data)} manual text items to OCR results.")
+                         data_list.extend(manual_data)
+
                 print(f"Matching {len(data_list)} OCR items to rooms...")
                 updated_boq = self.match_text_to_rooms(viewer.boq_data, data_list)
                 viewer.boq_data = updated_boq
@@ -601,6 +629,29 @@ class PDFViewerApp(QMainWindow):
         else:
             viewer.set_mode("grab")
             # self.btn_mode_toggle.setText("Mode: Grabber")
+            self.btn_mode_toggle.setIcon(qta.icon('fa5s.hand-rock'))
+            self.btn_mode_toggle.setToolTip("Mode: Grabber")
+
+        self.btn_text.setChecked(False)
+
+    def toggle_text_mode(self):
+        viewer = self.tabs.currentWidget()
+        if not viewer: return
+        
+        if self.btn_text.isChecked():
+            viewer.set_mode("text")
+            self.btn_mode_toggle.setChecked(False)
+            # Ensure grabber icon is reset if we were in measure mode (though toggle_interaction_mode handles logic for grabber/measure switch)
+            # If we were in measure mode, btn_mode_toggle was checked.
+            # If we were in grab mode, btn_mode_toggle was unchecked.
+            # We just want to visually uncheck the grabber/measure toggle if it was checked (meaning measure).
+            # But the toggle_interaction_mode logic is a bit specific: checked=Measure, unchecked=Grab.
+            # So if we enter Text mode, we are neither.
+            # Ideally "Grab" is the default when nothing else is active.
+            # For now, let's just say "Text" mode overrides them.
+        else:
+            viewer.set_mode("grab")
+            self.btn_mode_toggle.setChecked(False)
             self.btn_mode_toggle.setIcon(qta.icon('fa5s.hand-rock'))
             self.btn_mode_toggle.setToolTip("Mode: Grabber")
 

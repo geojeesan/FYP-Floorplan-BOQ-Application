@@ -40,6 +40,7 @@ class DocumentViewer(QWidget):
         self.mode = "grab" 
         self.completed_shapes = [] 
         self.current_path = []     
+        self.manual_text_labels = [] # List of {'pos': QPointF, 'text': str}
         self.is_closed = False     
         self.temp_mouse_pos = None
         self.pixel_to_unit_ratio = None
@@ -78,6 +79,7 @@ class DocumentViewer(QWidget):
         self.selected_room_class = None
         self.selected_item_class = None
         self.chat_log = [] 
+        self.manual_text_labels = []
         self.clear_measurements()
 
     def set_ocr_layer(self, layer_path):
@@ -107,6 +109,8 @@ class DocumentViewer(QWidget):
         self.mode = mode
         if mode == "grab":
             self.label.setCursor(Qt.OpenHandCursor)
+        elif mode == "text":
+            self.label.setCursor(Qt.IBeamCursor)
         else:
             self.label.setCursor(Qt.CrossCursor)
         self.update_view()
@@ -177,6 +181,34 @@ class DocumentViewer(QWidget):
             if hasattr(self.window(), 'update_toolbar_state'):
                 self.window().update_toolbar_state()
             self.update_view()
+        elif self.mode == "text" and event.button() == Qt.LeftButton:
+            local_pos = self.label.mapFromGlobal(event.globalPos())
+            img_pos = self.get_image_coords(local_pos)
+            
+            # Check if clicking on existing text to edit (simple hit test)
+            edited = False
+            tolerance = 20 / self.zoom_level
+            for item in self.manual_text_labels:
+                pos = item['pos']
+                # Approx interaction (just distance to point)
+                dist = ((img_pos.x() - pos.x())**2 + (img_pos.y() - pos.y())**2)**0.5
+                if dist < tolerance:
+                    text, ok = QInputDialog.getText(self, "Edit Text", "Edit label:", text=item['text'])
+                    if ok:
+                        if text.strip():
+                            item['text'] = text.strip()
+                        else:
+                            self.manual_text_labels.remove(item)
+                    edited = True
+                    break
+            
+            if not edited:
+                text, ok = QInputDialog.getText(self, "Add Text", "Enter label text:")
+                if ok and text.strip():
+                    self.manual_text_labels.append({'pos': img_pos, 'text': text.strip()})
+            
+            self.update_view()
+
         elif self.mode == "grab" and event.button() == Qt.LeftButton:
             self.label.setCursor(Qt.ClosedHandCursor)
             self.last_mouse_pos = event.globalPos()
@@ -311,8 +343,45 @@ class DocumentViewer(QWidget):
                 painter.setPen(QPen(main_color, 2, Qt.DashLine))
                 painter.drawLine(d_path[-1], self.temp_mouse_pos * self.zoom_level)
 
+        # Draw Manual Text
+        if self.manual_text_labels:
+             font = QFont("Segoe UI", 12, QFont.Bold)
+             painter.setFont(font)
+             for item in self.manual_text_labels:
+                 pos = item['pos']
+                 txt = item['text']
+                 screen_pos = pos * self.zoom_level
+                 
+                 # Draw background for better visibility
+                 fm = painter.fontMetrics()
+                 rect = fm.boundingRect(txt)
+                 rect.moveCenter(screen_pos.toPoint())
+                 rect.adjust(-5, -2, 5, 2)
+                 
+                 painter.setPen(Qt.NoPen)
+                 painter.setBrush(QColor(255, 255, 255, 180))
+                 painter.drawRoundedRect(rect, 4, 4)
+                 
+                 painter.setPen(QPen(Qt.blue, 2))
+                 painter.drawText(rect, Qt.AlignCenter, txt)
+
         painter.end()
         self.label.setPixmap(display_pixmap)
+
+    def get_manual_text_data(self):
+        """Returns manual text in a format compatible with OCR results."""
+        results = []
+        for item in self.manual_text_labels:
+            pos = item['pos']
+            # Create a small dummy rect centered on the point
+            # [x1, y1, x2, y2]
+            w, h = 10, 10
+            rect = [pos.x() - w/2, pos.y() - h/2, pos.x() + w/2, pos.y() + h/2]
+            results.append({
+                'text': item['text'],
+                'rect': rect
+            })
+        return results
 
     def draw_ai_shapes(self, painter, data_key, target_label, color):
         painter.setPen(QPen(color, 4))
