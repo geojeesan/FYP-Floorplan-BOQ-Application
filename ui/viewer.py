@@ -138,8 +138,14 @@ class DocumentViewer(QWidget):
     
     def recalibrate(self):
         if len(self.current_path) >= 2:
+            # Recalibrate based on the current active segment
             self.calculate_initial_scale()
-            self.update_view()
+        else:
+            # Reset the scale and enter measure mode so the next drawn line sets the new scale
+            self.pixel_to_unit_ratio = None
+            self.set_mode("measure")
+            
+        self.update_view()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:

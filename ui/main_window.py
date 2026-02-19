@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QStackedWidget, QButtonGroup
 )
 from PySide6.QtGui import QPixmap, QImage, QIcon
+import qtawesome as qta
 from PySide6.QtCore import Qt, Slot
 
 # Imports from sibling files in the 'ui' package
@@ -109,12 +110,16 @@ class PDFViewerApp(QMainWindow):
         self.btn_items.clicked.connect(self.on_toggle_items)
         self.btn_items.setEnabled(False)
 
-        self.btn_measure = QPushButton("Measure Area")
+        self.btn_measure = QPushButton()
+        self.btn_measure.setIcon(qta.icon('fa5s.ruler-combined'))
+        self.btn_measure.setToolTip("Measure Area")
         self.btn_measure.clicked.connect(self.on_measure_clicked)
         self.btn_measure.setEnabled(False)
 
-        self.btn_mode_toggle = QPushButton("Mode: Grabber")
+        self.btn_mode_toggle = QPushButton()
         self.btn_mode_toggle.setCheckable(True)
+        self.btn_mode_toggle.setIcon(qta.icon('fa5s.hand-rock'))
+        self.btn_mode_toggle.setToolTip("Mode: Grabber")
         self.btn_mode_toggle.clicked.connect(self.toggle_interaction_mode)
         self.btn_mode_toggle.setEnabled(False)
 
@@ -218,6 +223,11 @@ class PDFViewerApp(QMainWindow):
         viewer = self.tabs.currentWidget()
         
         self.thumbnail_scroll.takeWidget()
+        if isinstance(viewer, DocumentViewer):
+            self.setWindowTitle(f"PDF BOQ Viewer - {viewer.file_path}")
+        else:
+            self.setWindowTitle("PDF BOQ Viewer")
+
         if isinstance(viewer, DocumentViewer) and viewer.is_pdf_browser and viewer.thumbnail_widget:
             self.thumbnail_scroll.setWidget(viewer.thumbnail_widget)
             self.thumbnail_scroll.show()
@@ -267,18 +277,28 @@ class PDFViewerApp(QMainWindow):
                 self.btn_show_chat.setChecked(True)
             
             if viewer.pixel_to_unit_ratio is not None:
-                self.btn_measure.setText("Re-calibrate Scale")
+                # self.btn_measure.setText("Re-calibrate Scale")
+                self.btn_measure.setToolTip("Re-calibrate Scale")
+                self.btn_measure.setIcon(qta.icon('fa5s.ruler-vertical', color='orange'))
             elif len(viewer.current_path) > 0 or len(viewer.completed_shapes) > 0:
-                self.btn_measure.setText("Re-measure Area")
+                # self.btn_measure.setText("Re-measure Area")
+                self.btn_measure.setToolTip("Re-measure Area")
+                self.btn_measure.setIcon(qta.icon('fa5s.ruler-combined', color='blue'))
             else:
-                self.btn_measure.setText("Measure Area")
+                # self.btn_measure.setText("Measure Area")
+                self.btn_measure.setToolTip("Measure Area")
+                self.btn_measure.setIcon(qta.icon('fa5s.ruler-combined'))
             
             if viewer.mode == "measure":
                 self.btn_mode_toggle.setChecked(True)
-                self.btn_mode_toggle.setText("Mode: Measurer")
+                # self.btn_mode_toggle.setText("Mode: Measurer")
+                self.btn_mode_toggle.setToolTip("Mode: Measurer")
+                self.btn_mode_toggle.setIcon(qta.icon('fa5s.crosshairs'))
             else:
                 self.btn_mode_toggle.setChecked(False)
-                self.btn_mode_toggle.setText("Mode: Grabber")
+                # self.btn_mode_toggle.setText("Mode: Grabber")
+                self.btn_mode_toggle.setToolTip("Mode: Grabber")
+                self.btn_mode_toggle.setIcon(qta.icon('fa5s.hand-rock'))
             
             if viewer.has_analysis_data:
                 self.status_label.setText("Analysis Ready")
@@ -458,10 +478,14 @@ class PDFViewerApp(QMainWindow):
         if not viewer: return
         if self.btn_mode_toggle.isChecked():
             viewer.set_mode("measure")
-            self.btn_mode_toggle.setText("Mode: Measurer")
+            # self.btn_mode_toggle.setText("Mode: Measurer")
+            self.btn_mode_toggle.setIcon(qta.icon('fa5s.crosshairs'))
+            self.btn_mode_toggle.setToolTip("Mode: Measurer")
         else:
             viewer.set_mode("grab")
-            self.btn_mode_toggle.setText("Mode: Grabber")
+            # self.btn_mode_toggle.setText("Mode: Grabber")
+            self.btn_mode_toggle.setIcon(qta.icon('fa5s.hand-rock'))
+            self.btn_mode_toggle.setToolTip("Mode: Grabber")
 
     def close_tab(self, index):
         self.tabs.removeTab(index)

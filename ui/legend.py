@@ -138,6 +138,12 @@ class LegendWidget(QWidget):
             else:
                 present_rooms[lbl] = cid
 
+        # Ensure mandatory structures are present
+        if "Wall" not in present_structures:
+            present_structures["Wall"] = 2
+        if "Railing" not in present_structures:
+            present_structures["Railing"] = 8
+
         for item in boq_data.get('icons', []):
             lbl = item.get('label', 'Unknown')
             cid = item.get('class_id', -1)
