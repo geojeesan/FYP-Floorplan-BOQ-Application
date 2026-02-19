@@ -356,3 +356,38 @@ class DocumentViewer(QWidget):
         self.show_rooms = show_rooms
         self.show_items = show_items
         self.update_view()
+
+    def get_scaled_boq_data(self):
+        """
+        Returns a copy of the BOQ data with areas converted to real-world units
+        if calibration (pixel_to_unit_ratio) is set.
+        """
+        if not self.boq_data:
+            return {}
+
+        import copy
+        data = copy.deepcopy(self.boq_data)
+        
+        ratio = self.pixel_to_unit_ratio
+        
+        # Helper to convert
+        def convert_area(px_area):
+            if ratio is None: return f"{px_area:.0f} px²"
+            m2 = px_area * (ratio ** 2)
+            return f"{m2:.2f} m²"
+
+        # Apply to Rooms
+        for room in data.get('rooms', []):
+            area_px = room.get('area_pixels', 0)
+            room['area_readable'] = convert_area(area_px)
+            # Remove raw points to save token context window for LLM
+            if 'points' in room: del room['points']
+            if 'box_2d' in room: del room['box_2d']
+
+        # Apply to Icons (if they had area, but usually they are counts/points)
+        for icon in data.get('icons', []):
+            # Icons usually point locations, but if we had dimensions we'd scale them
+            if 'box_2d' in icon: del icon['box_2d']
+            if 'points' in icon: del icon['points']
+            
+        return data
