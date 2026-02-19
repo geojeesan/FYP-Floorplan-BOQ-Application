@@ -8,6 +8,8 @@ from .viewer import DocumentViewer
 class LegendWidget(QWidget):
     ocrRequested = Signal(bool) # Signal to Main Window: True=Show/Run, False=Hide
     ocrLabelsToggled = Signal(bool) # Signal to use OCR text as labels
+    roomsToggled = Signal(bool)
+    itemsToggled = Signal(bool)
 
     def __init__(self):
         super().__init__()
@@ -30,15 +32,52 @@ class LegendWidget(QWidget):
         self.item_layout = QVBoxLayout(self.item_container)
         self.item_layout.setContentsMargins(0,0,0,0)
 
-        self.layout.addWidget(QLabel("<b>Rooms</b>"))
-        self.layout.addWidget(self.room_container)
-        self.layout.addWidget(QLabel("<b>Structures</b>"))
-        self.layout.addWidget(self.structure_container)
-        self.layout.addWidget(QLabel("<b>Items</b>"))
-        self.layout.addWidget(self.item_container)
+        # Wrapper Widgets for toggle visibility
+        self.rooms_wrapper = QWidget()
+        self.rooms_wrapper_layout = QVBoxLayout(self.rooms_wrapper)
+        self.rooms_wrapper_layout.setContentsMargins(0,0,0,0)
+        
+        self.items_wrapper = QWidget()
+        self.items_wrapper_layout = QVBoxLayout(self.items_wrapper)
+        self.items_wrapper_layout.setContentsMargins(0,0,0,0)
 
-        self.layout.addSpacing(15)
-        self.layout.addWidget(QLabel("<b>Tools</b>"))
+        # 1. Rooms Toggle and Section
+        self.btn_toggle_rooms = QPushButton("Show Rooms and Structures")
+        self.btn_toggle_rooms.setCheckable(True)
+        self.btn_toggle_rooms.setChecked(True)
+        self.btn_toggle_rooms.setCursor(Qt.PointingHandCursor)
+        self.btn_toggle_rooms.setStyleSheet(self._get_btn_style(False))
+        self.btn_toggle_rooms.clicked.connect(self.on_rooms_clicked)
+        self.layout.addWidget(self.btn_toggle_rooms)
+        
+        # Rooms Content
+        self.rooms_wrapper_layout.addWidget(QLabel("<b>Rooms</b>"))
+        self.rooms_wrapper_layout.addWidget(self.room_container)
+        self.lbl_structures = QLabel("<b>Structures</b>")
+        self.rooms_wrapper_layout.addWidget(self.lbl_structures)
+        self.rooms_wrapper_layout.addWidget(self.structure_container)
+        self.layout.addWidget(self.rooms_wrapper)
+
+        # 2. Items Toggle and Section
+        self.btn_toggle_items = QPushButton("Show Items")
+        self.btn_toggle_items.setCheckable(True)
+        self.btn_toggle_items.setChecked(True)
+        self.btn_toggle_items.setCursor(Qt.PointingHandCursor)
+        self.btn_toggle_items.setStyleSheet(self._get_btn_style(False))
+        self.btn_toggle_items.clicked.connect(self.on_items_clicked)
+        self.layout.addWidget(self.btn_toggle_items)
+
+        # Items Content
+        self.items_wrapper_layout.addWidget(QLabel("<b>Items</b>"))
+        self.items_wrapper_layout.addWidget(self.item_container)
+        self.layout.addWidget(self.items_wrapper)
+        
+        # Initialize Visibility
+        self.rooms_wrapper.setVisible(True)
+        self.items_wrapper.setVisible(True)
+        
+
+        #self.layout.addWidget(QLabel("<b>Tools</b>"))
         
         # --- OCR Button ---
         self.btn_ocr = QPushButton("OCR Text Detection")
@@ -57,7 +96,7 @@ class LegendWidget(QWidget):
         self.layout.addWidget(self.progress_bar)
 
         # --- OCR Label Toggle ---
-        self.btn_toggle_ocr_labels = QPushButton("Show OCR Labels")
+        self.btn_toggle_ocr_labels = QPushButton("Replace text labels with OCR")
         self.btn_toggle_ocr_labels.setCheckable(True)
         self.btn_toggle_ocr_labels.setCursor(Qt.PointingHandCursor)
         self.btn_toggle_ocr_labels.setVisible(False) # Hidden until OCR is done
@@ -65,9 +104,7 @@ class LegendWidget(QWidget):
         self.btn_toggle_ocr_labels.clicked.connect(self.on_ocr_labels_toggled)
         self.layout.addWidget(self.btn_toggle_ocr_labels)
         
-        self.room_container.setVisible(False)
         self.structure_container.setVisible(False)
-        self.item_container.setVisible(False)
 
     def on_ocr_clicked(self):
         is_checked = self.btn_ocr.isChecked()
@@ -78,6 +115,18 @@ class LegendWidget(QWidget):
         is_checked = self.btn_toggle_ocr_labels.isChecked()
         self.btn_toggle_ocr_labels.setStyleSheet(self._get_btn_style(is_checked))
         self.ocrLabelsToggled.emit(is_checked)
+
+    def on_rooms_clicked(self):
+        is_checked = self.btn_toggle_rooms.isChecked()
+        self.btn_toggle_rooms.setStyleSheet(self._get_btn_style(is_checked))
+        self.rooms_wrapper.setVisible(is_checked)
+        self.roomsToggled.emit(is_checked)
+
+    def on_items_clicked(self):
+        is_checked = self.btn_toggle_items.isChecked()
+        self.btn_toggle_items.setStyleSheet(self._get_btn_style(is_checked))
+        self.items_wrapper.setVisible(is_checked)
+        self.itemsToggled.emit(is_checked)
 
     def show_progress(self):
         self.progress_bar.setVisible(True)
@@ -159,7 +208,9 @@ class LegendWidget(QWidget):
         self._add_dynamic_items(self.structure_layout, struct_labels, present_structures, self.room_colors, is_room=True, clickable=False)
         self._add_dynamic_items(self.item_layout, icon_labels, present_icons, self.icon_colors, is_room=False)
         
-        self.structure_container.setVisible(len(struct_labels) > 0)
+        has_structures = len(struct_labels) > 0
+        self.structure_container.setVisible(has_structures)
+        self.lbl_structures.setVisible(has_structures)
 
     def _add_dynamic_items(self, layout, label_list, label_map, color_palette, is_room, clickable=True):
         """
@@ -240,7 +291,18 @@ class LegendWidget(QWidget):
                 viewer.select_room_type(None)
 
     def set_visibility(self, show_rooms, show_items):
-        self.room_container.setVisible(show_rooms)
+        # This acts as an external override or init
+        self.rooms_wrapper.setVisible(show_rooms)
+        self.items_wrapper.setVisible(show_items)
+        
+        # Manage internal structure visibility
+        # If structures are empty, hide the subtitle too
         has_structures = self.structure_layout.count() > 0
-        self.structure_container.setVisible(show_rooms and has_structures)
-        self.item_container.setVisible(show_items)
+        self.structure_container.setVisible(has_structures)
+        self.lbl_structures.setVisible(has_structures)
+        
+        # Sync buttons
+        self.btn_toggle_rooms.setChecked(show_rooms)
+        self.btn_toggle_items.setChecked(show_items)
+        self.btn_toggle_rooms.setStyleSheet(self._get_btn_style(show_rooms))
+        self.btn_toggle_items.setStyleSheet(self._get_btn_style(show_items))

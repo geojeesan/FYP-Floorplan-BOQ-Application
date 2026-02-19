@@ -5,7 +5,7 @@ import random
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QScrollArea, QLabel, QFileDialog, QTabWidget, QPushButton, QMessageBox,
-    QStackedWidget, QButtonGroup
+    QStackedWidget, QButtonGroup, QTabBar
 )
 from PySide6.QtGui import QPixmap, QImage, QIcon
 import qtawesome as qta
@@ -42,7 +42,25 @@ class PDFViewerApp(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.setTabsClosable(True)
         self.tabs.tabCloseRequested.connect(self.close_tab)
-        self.tabs.currentChanged.connect(self.update_toolbar_state)
+        self.tabs.currentChanged.connect(self.on_tab_changed)
+        
+        # Start Screen (Initial View)
+        self.start_screen = QWidget()
+        start_layout = QVBoxLayout(self.start_screen)
+        start_layout.setAlignment(Qt.AlignCenter)
+        
+        self.btn_big_open = QPushButton("Open PDF / Image")
+        self.btn_big_open.setFixedSize(300, 100)
+        self.btn_big_open.setStyleSheet("font-size: 24px; font-weight: bold; border-radius: 10px;")
+        self.btn_big_open.setCursor(Qt.PointingHandCursor)
+        self.btn_big_open.clicked.connect(self.open_file)
+        
+        start_layout.addWidget(self.btn_big_open)
+        
+        # Stack to hold Tabs or Start Screen
+        self.center_stack = QStackedWidget()
+        self.center_stack.addWidget(self.start_screen) # Index 0
+        self.center_stack.addWidget(self.tabs)       # Index 1
 
         # --- Right Sidebar Configuration ---
         self.right_sidebar = QWidget()
@@ -50,7 +68,25 @@ class PDFViewerApp(QMainWindow):
         self.right_layout = QVBoxLayout(self.right_sidebar)
         self.right_layout.setContentsMargins(5, 5, 5, 5)
 
-        # 1. Toggle Buttons
+        # 1. Analyse Button (Initially Hidden/Disabled until file loaded, resets on analysis)
+        self.btn_analyse = QPushButton("Analyse")
+        self.btn_analyse.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50; 
+                color: white; 
+                font-size: 16px; 
+                padding: 10px; 
+                border-radius: 5px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #45a049; }
+            QPushButton:disabled { background-color: #cccccc; color: #666666; }
+        """)
+        self.btn_analyse.setCursor(Qt.PointingHandCursor)
+        self.btn_analyse.clicked.connect(self.start_worker_on_current_tab)
+        self.right_layout.addWidget(self.btn_analyse)
+
+        # 2. Toggle Buttons (Chat / Legend) - Initially Hidden
         self.toggle_container = QWidget()
         toggle_layout = QHBoxLayout(self.toggle_container)
         toggle_layout.setContentsMargins(0, 0, 0, 0)
@@ -83,6 +119,8 @@ class PDFViewerApp(QMainWindow):
         # Connect the OCR Signals
         self.legend.ocrRequested.connect(self.on_ocr_requested)
         self.legend.ocrLabelsToggled.connect(self.on_toggle_ocr_labels)
+        self.legend.roomsToggled.connect(self.on_toggle_rooms)
+        self.legend.itemsToggled.connect(self.on_toggle_items)
         
         self.legend_scroll.setWidget(self.legend)
         self.right_stack.addWidget(self.legend_scroll)
@@ -95,21 +133,9 @@ class PDFViewerApp(QMainWindow):
         self.toggle_container.hide()
 
         # Controls Left Side
-        controls = QWidget()
-        control_layout = QVBoxLayout(controls)
-        btn_open = QPushButton("Open PDF/Image")
-        btn_open.clicked.connect(self.open_file)
+        self.controls = QWidget() # Make it an instance variable
+        control_layout = QVBoxLayout(self.controls)
         
-        self.btn_rooms = QPushButton("Room Segmentation")
-        self.btn_rooms.setCheckable(True)
-        self.btn_rooms.clicked.connect(self.on_toggle_rooms)
-        self.btn_rooms.setEnabled(False)
-        
-        self.btn_items = QPushButton("Item Segmentation")
-        self.btn_items.setCheckable(True)
-        self.btn_items.clicked.connect(self.on_toggle_items)
-        self.btn_items.setEnabled(False)
-
         self.btn_measure = QPushButton()
         self.btn_measure.setIcon(qta.icon('fa5s.ruler-combined'))
         self.btn_measure.setToolTip("Measure Area")
@@ -123,28 +149,32 @@ class PDFViewerApp(QMainWindow):
         self.btn_mode_toggle.clicked.connect(self.toggle_interaction_mode)
         self.btn_mode_toggle.setEnabled(False)
 
+        # Status Label - Moved to StatusBar
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: gray; font-style: italic;")
-        self.status_label.setWordWrap(True)
+        self.statusBar().addWidget(self.status_label)
 
-        control_layout.addWidget(btn_open)
         control_layout.addSpacing(20)
-        control_layout.addWidget(self.btn_rooms)
-        control_layout.addWidget(self.btn_items)
-        control_layout.addWidget(self.status_label)
+        # control_layout.addWidget(self.btn_rooms) # Moved to Legend
+        # control_layout.addWidget(self.btn_items) # Moved to Legend
+        # control_layout.addWidget(self.status_label) # Moved to StatusBar
         control_layout.addSpacing(10)
         control_layout.addWidget(self.btn_measure)
         control_layout.addWidget(self.btn_mode_toggle)
         control_layout.addStretch()
 
-        layout.addWidget(controls)
+        layout.addWidget(self.controls)
         layout.addWidget(self.thumbnail_scroll)
-        layout.addWidget(self.tabs)
+        layout.addWidget(self.center_stack) # Replaced self.tabs with stack
         layout.addWidget(self.right_sidebar)
         
         self.worker = None
         self.ocr_worker = None # Worker for OCR
-        self.update_toolbar_state()
+        
+        # Add the 'New Tab' button (dummy tab)
+        self.update_tabs_visibility()
+        self.right_sidebar.hide() # Explicitly hide on startup
+        self.controls.hide() # Explicitly hide on startup
 
     # ... (open_file, load_pdf, etc. remain unchanged) ...
     def open_file(self):
@@ -152,6 +182,8 @@ class PDFViewerApp(QMainWindow):
         if path:
             if path.lower().endswith('.pdf'): self.load_pdf(path)
             else: self.load_single_image(path)
+            self.center_stack.setCurrentIndex(1) # Show Tabs
+            self.update_tabs_visibility()
 
     def load_single_image(self, path):
         self.add_viewer_tab(path, "Image")
@@ -195,6 +227,7 @@ class PDFViewerApp(QMainWindow):
 
             self.tabs.addTab(viewer, os.path.basename(path))
             self.tabs.setCurrentWidget(viewer)
+            self.ensure_plus_tab()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not load PDF: {e}")
 
@@ -217,16 +250,30 @@ class PDFViewerApp(QMainWindow):
         viewer = DocumentViewer(image_path)
         self.tabs.addTab(viewer, title)
         self.tabs.setCurrentWidget(viewer)
-        self.update_toolbar_state()
+        self.ensure_plus_tab()
+        self.update_toolbar_state() # Trigger update manually if valid tab connected
 
     def update_toolbar_state(self):
         viewer = self.tabs.currentWidget()
         
+        # Check if we are on the '+' tab
+        if self.tabs.tabText(self.tabs.currentIndex()) == "+":
+            # This is handled in on_tab_changed, but just in case
+            self.btn_analyse.hide()
+            self.toggle_container.hide()
+            self.right_sidebar.hide() # Maybe hide whole sidebar?
+            self.controls.hide()
+            return
+
         self.thumbnail_scroll.takeWidget()
         if isinstance(viewer, DocumentViewer):
             self.setWindowTitle(f"PDF BOQ Viewer - {viewer.file_path}")
+            self.right_sidebar.show()
+            self.controls.show()
         else:
             self.setWindowTitle("PDF BOQ Viewer")
+            self.right_sidebar.hide() # Ensure hidden if not viewing a document
+            self.controls.hide()
 
         if isinstance(viewer, DocumentViewer) and viewer.is_pdf_browser and viewer.thumbnail_widget:
             self.thumbnail_scroll.setWidget(viewer.thumbnail_widget)
@@ -235,15 +282,15 @@ class PDFViewerApp(QMainWindow):
             self.thumbnail_scroll.hide()
 
         if isinstance(viewer, DocumentViewer):
-            self.btn_rooms.setEnabled(True)
-            self.btn_items.setEnabled(True)
+            # self.btn_rooms.setEnabled(True)
+            # self.btn_items.setEnabled(True)
             
-            self.btn_rooms.blockSignals(True)
-            self.btn_items.blockSignals(True)
-            self.btn_rooms.setChecked(viewer.show_rooms)
-            self.btn_items.setChecked(viewer.show_items)
-            self.btn_rooms.blockSignals(False)
-            self.btn_items.blockSignals(False)
+            # self.btn_rooms.blockSignals(True)
+            # self.btn_items.blockSignals(True)
+            # self.btn_rooms.setChecked(viewer.show_rooms)
+            # self.btn_items.setChecked(viewer.show_items)
+            # self.btn_rooms.blockSignals(False)
+            # self.btn_items.blockSignals(False)
             
             self.btn_measure.setEnabled(True)
             self.btn_mode_toggle.setEnabled(True)
@@ -254,6 +301,14 @@ class PDFViewerApp(QMainWindow):
             if not viewer.has_ocr_data:
                 self.legend.btn_ocr.setChecked(False)
             self.legend.btn_ocr.blockSignals(False)
+            
+            # --- Update Segmentation Toggles in Legend ---
+            self.legend.btn_toggle_rooms.blockSignals(True)
+            self.legend.btn_toggle_items.blockSignals(True)
+            self.legend.btn_toggle_rooms.setChecked(viewer.show_rooms)
+            self.legend.btn_toggle_items.setChecked(viewer.show_items)
+            self.legend.btn_toggle_rooms.blockSignals(False)
+            self.legend.btn_toggle_items.blockSignals(False)
 
             self.chat_panel.set_active_viewer(viewer)
 
@@ -265,16 +320,22 @@ class PDFViewerApp(QMainWindow):
                     self.legend.refresh_legend(boq_data)
                     self.legend.set_visibility(viewer.show_rooms, viewer.show_items)
                 except: pass 
+                
+                # Analysis Done: Show Toggles, Hide Analyse Button
+                self.btn_analyse.hide()
+                self.toggle_container.show()
+                self.status_label.setText("Analysis Ready")
             else:
                 self.legend.refresh_legend({"rooms": [], "icons": []})
                 self.legend.set_visibility(False, False)
-
-            if viewer.has_analysis_data:
-                self.toggle_container.show()
-            else:
+                
+                # Analysis Not Done: Show Analyse Button, Hide Toggles
+                self.btn_analyse.show()
+                self.btn_analyse.setEnabled(True)
                 self.toggle_container.hide()
-                self.right_stack.setCurrentIndex(0) 
-                self.btn_show_chat.setChecked(True)
+                self.right_stack.setCurrentIndex(1) # Show legend/empty
+                # self.btn_show_chat.setChecked(True) # Don't force chat check?
+                self.status_label.setText("Ready to Analyze")
             
             if viewer.pixel_to_unit_ratio is not None:
                 # self.btn_measure.setText("Re-calibrate Scale")
@@ -300,20 +361,76 @@ class PDFViewerApp(QMainWindow):
                 self.btn_mode_toggle.setToolTip("Mode: Grabber")
                 self.btn_mode_toggle.setIcon(qta.icon('fa5s.hand-rock'))
             
-            if viewer.has_analysis_data:
-                self.status_label.setText("Analysis Ready")
-            else:
-                self.status_label.setText("Ready to Analyze")
         else:
-            self.btn_rooms.setEnabled(False)
-            self.btn_items.setEnabled(False)
+            # self.btn_rooms.setEnabled(False)
+            # self.btn_items.setEnabled(False)
             self.legend.set_visibility(False, False)
             self.status_label.setText("")
             self.btn_measure.setEnabled(False)
             self.btn_mode_toggle.setEnabled(False)
             self.thumbnail_scroll.hide()
+            
+            self.btn_analyse.hide()
             self.toggle_container.hide()
             self.chat_panel.set_active_viewer(None)
+
+    def on_tab_changed(self, index):
+        if index == -1: return
+        
+        # Check if we clicked the '+' tab
+        if self.tabs.tabText(index) == "+":
+            self.open_file()
+            # If user cancelled file open, we might need to switch back to previous tab 
+            # or stay here? If we stay here, it shows empty. 
+            # Ideally open_file selects the new tab. 
+            # If no file opened, switch back to previous if possible?
+            if self.tabs.count() > 1 and self.tabs.currentWidget() == self.tabs.widget(index):
+                 # Switch to second to last tab (the real last tab)
+                 self.tabs.setCurrentIndex(self.tabs.count() - 2)
+        else:
+            self.update_toolbar_state()
+
+    def ensure_plus_tab(self):
+        # Remove existing '+' tab if present
+        for i in range(self.tabs.count()):
+            if self.tabs.tabText(i) == "+":
+                self.tabs.removeTab(i)
+                break
+        
+        # Add '+' tab at the end
+        if self.tabs.count() > 0: # Only add if we have at least one real tab
+            plus_widget = QWidget()
+            index = self.tabs.addTab(plus_widget, "+")
+            
+            # Disable close on the plus tab by removing the button
+            self.tabs.tabBar().setTabButton(index, QTabBar.RightSide, None)
+
+    def update_tabs_visibility(self):
+        count = self.tabs.count()
+        # If we have 0 real tabs, show start screen.
+        # If we have 1 tab and it is '+', that counts as 0 real tabs.
+        
+        real_tab_count = 0
+        for i in range(count):
+            if self.tabs.tabText(i) != "+":
+                real_tab_count += 1
+                
+        if real_tab_count == 0:
+            self.center_stack.setCurrentIndex(0) # Start Screen
+            # Also ensure no '+' tab here
+            for i in range(self.tabs.count()):
+                if self.tabs.tabText(i) == "+":
+                    self.tabs.removeTab(i)
+        else:
+            self.center_stack.setCurrentIndex(1) # Tabs
+            self.ensure_plus_tab()
+
+    def close_tab(self, index):
+        if self.tabs.tabText(index) == "+": return # Don't close the plus tab
+        
+        self.tabs.removeTab(index)
+        self.update_tabs_visibility()
+        self.update_toolbar_state()
 
     # --- OCR Handling ---
     def on_ocr_requested(self, is_checked):
@@ -488,11 +605,26 @@ class PDFViewerApp(QMainWindow):
             self.btn_mode_toggle.setToolTip("Mode: Grabber")
 
     def close_tab(self, index):
+        if self.tabs.tabText(index) == "+": return # Don't close the plus tab
+        
         self.tabs.removeTab(index)
+        self.update_tabs_visibility()
         self.update_toolbar_state()
 
-    def on_toggle_rooms(self): self.handle_toggle()
-    def on_toggle_items(self): self.handle_toggle()
+    # def on_toggle_rooms(self): self.handle_toggle()
+    # def on_toggle_items(self): self.handle_toggle()
+    
+    def on_toggle_rooms(self, is_checked):
+        viewer = self.tabs.currentWidget()
+        if isinstance(viewer, DocumentViewer) and viewer.has_analysis_data:
+            viewer.toggle_layers(is_checked, viewer.show_items)
+            self.legend.set_visibility(is_checked, viewer.show_items)
+
+    def on_toggle_items(self, is_checked):
+        viewer = self.tabs.currentWidget()
+        if isinstance(viewer, DocumentViewer) and viewer.has_analysis_data:
+            viewer.toggle_layers(viewer.show_rooms, is_checked)
+            self.legend.set_visibility(viewer.show_rooms, is_checked)
 
     def handle_toggle(self):
         viewer = self.tabs.currentWidget()
@@ -504,19 +636,29 @@ class PDFViewerApp(QMainWindow):
             self.btn_rooms.setChecked(True) 
             self.btn_items.setChecked(self.sender() == self.btn_items) 
             self.start_worker_on_current_tab()
-            return
-        rooms_checked = self.btn_rooms.isChecked()
-        items_checked = self.btn_items.isChecked()
-        if not viewer.has_analysis_data:
             self.start_worker_on_current_tab()
-        else:
-            viewer.toggle_layers(rooms_checked, items_checked)
-            self.legend.set_visibility(rooms_checked, items_checked)
+            return
+        
+        # Removed automatic toggle handling here. Logic is shifted to manual Anaylse button and specific toggles.
+        pass
+        
+        # rooms_checked = self.btn_rooms.isChecked()
+        # items_checked = self.btn_items.isChecked()
+        # if not viewer.has_analysis_data:
+        #     self.start_worker_on_current_tab()
+        # else:
+        #     viewer.toggle_layers(rooms_checked, items_checked)
+        #     self.legend.set_visibility(rooms_checked, items_checked)
 
     def start_worker_on_current_tab(self):
         viewer = self.tabs.currentWidget()
-        self.btn_rooms.setEnabled(False)
-        self.btn_items.setEnabled(False)
+        if not isinstance(viewer, DocumentViewer): return
+        
+        self.btn_analyse.setEnabled(False)
+        self.btn_analyse.setText("Analysing...")
+        
+        # self.btn_rooms.setEnabled(False)
+        # self.btn_items.setEnabled(False)
         self.status_label.setText("Extracting Contours & Analyzing...")
         self.worker = CubiCasaWorker(viewer.file_path)
         self.worker.finished.connect(self.on_analysis_finished)
@@ -536,26 +678,46 @@ class PDFViewerApp(QMainWindow):
             except Exception as e:
                 print(f"Failed to load BOQ data for legend: {e}")
 
-            rooms_checked = self.btn_rooms.isChecked()
-            items_checked = self.btn_items.isChecked()
+                self.legend.refresh_legend(boq_data) 
+            except Exception as e:
+                print(f"Failed to load BOQ data for legend: {e}")
+
+            # Default to showing everything after analysis
+            rooms_checked = True 
+            items_checked = True 
             viewer.toggle_layers(rooms_checked, items_checked)
             self.legend.set_visibility(rooms_checked, items_checked)
+            
+            # Sync Legend Toggles
+            self.legend.btn_toggle_rooms.blockSignals(True)
+            self.legend.btn_toggle_items.blockSignals(True)
+            self.legend.btn_toggle_rooms.setChecked(rooms_checked)
+            self.legend.btn_toggle_items.setChecked(items_checked)
+            self.legend.btn_toggle_rooms.blockSignals(False)
+            self.legend.btn_toggle_items.blockSignals(False)
             self.temp_files.extend([room_path, item_path, json_path])
             
             self.toggle_container.show()
             self.right_stack.setCurrentIndex(1) 
             self.btn_show_legend.setChecked(True)
+            self.btn_analyse.hide()
+            self.btn_analyse.setText("Analyse") 
+            self.btn_analyse.setEnabled(True)
 
-        self.btn_rooms.setEnabled(True)
-        self.btn_items.setEnabled(True)
+        # self.btn_rooms.setEnabled(True)
+        # self.btn_items.setEnabled(True)
         self.status_label.setText(f"Analysis Complete.")
 
     @Slot(str)
     def on_analysis_error(self, err_msg):
-        self.btn_rooms.setEnabled(True)
-        self.btn_items.setEnabled(True)
-        self.btn_rooms.setChecked(False)
-        self.btn_items.setChecked(False)
+        # self.btn_rooms.setEnabled(True)
+        # self.btn_items.setEnabled(True)
+        # self.btn_rooms.setChecked(False)
+        # self.btn_items.setChecked(False)
+        
+        self.btn_analyse.setEnabled(True)
+        self.btn_analyse.setText("Analyse")
+        
         self.status_label.setText("Analysis Failed")
         QMessageBox.critical(self, "Analysis Error", err_msg)
 
