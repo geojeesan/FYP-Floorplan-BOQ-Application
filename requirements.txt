@@ -16,3 +16,5 @@ lmdb
 tensorboardX
 requests
 qtawesome
+pyqtgraph
+PyOpenGL

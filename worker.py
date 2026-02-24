@@ -150,11 +150,18 @@ class CubiCasaWorker(QThread):
                             })
                     except: pass
 
-                # Process Icons
+                # Process Icons, Doors, Windows, and Walls
                 for i, poly in enumerate(polygons):
                     type_info = types[i]
                     class_idx = type_info['class']
-                    if type_info.get('type', '') == 'icon':
+                    p_type = type_info.get('type', '')
+                    
+                    if p_type == 'wall':
+                        # Wall and Railing
+                        label_name = constants.ROOM_CLASSES[class_idx] if 0 <= class_idx < len(constants.ROOM_CLASSES) else "Unknown"
+                        boq_data["rooms"].append({"class_id": int(class_idx), "label": label_name, "points": poly.tolist()})
+                    elif p_type != 'room': 
+                        # Catch icons, doors, windows, etc.
                         label_name = constants.ICON_CLASSES[class_idx] if 0 <= class_idx < len(constants.ICON_CLASSES) else "Unknown"
                         boq_data["icons"].append({"class_id": int(class_idx), "label": label_name, "points": poly.tolist()})
                     

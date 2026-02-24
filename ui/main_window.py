@@ -3,7 +3,7 @@ import sys
 import fitz  # PyMuPDF
 import random
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QInputDialog, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QScrollArea, QLabel, QFileDialog, QTabWidget, QPushButton, QMessageBox,
     QStackedWidget, QButtonGroup, QTabBar
 )
@@ -20,6 +20,8 @@ from .chat import AIChatPanel
 from worker import CubiCasaWorker, OCRWorker
 import constants
 from shapely.geometry import Point, Polygon as ShapelyPolygon
+
+from ui.model_3d import ThreeDViewer
 
 class PDFViewerApp(QMainWindow):
     def __init__(self):
@@ -51,7 +53,7 @@ class PDFViewerApp(QMainWindow):
         
         self.btn_big_open = QPushButton("Open PDF / Image")
         self.btn_big_open.setFixedSize(300, 100)
-        self.btn_big_open.setStyleSheet("font-size: 24px; font-weight: bold; border-radius: 10px;")
+        self.btn_big_open.setStyleSheet("font-size: 24px; font-weight: bold; border-radius: 10px; background-color: #fb9a44; color: white;")
         self.btn_big_open.setCursor(Qt.PointingHandCursor)
         self.btn_big_open.clicked.connect(self.open_file)
         
@@ -72,14 +74,14 @@ class PDFViewerApp(QMainWindow):
         self.btn_analyse = QPushButton("Analyse")
         self.btn_analyse.setStyleSheet("""
             QPushButton {
-                background-color: #4CAF50; 
+                background-color: #fb9a44; 
                 color: white; 
                 font-size: 16px; 
                 padding: 10px; 
                 border-radius: 5px;
                 font-weight: bold;
             }
-            QPushButton:hover { background-color: #45a049; }
+            QPushButton:hover { background-color: #e08c3a; }
             QPushButton:disabled { background-color: #cccccc; color: #666666; }
         """)
         self.btn_analyse.setCursor(Qt.PointingHandCursor)
@@ -156,6 +158,19 @@ class PDFViewerApp(QMainWindow):
         self.btn_text.setToolTip("Add Text Label")
         self.btn_text.clicked.connect(self.toggle_text_mode)
         self.btn_text.setEnabled(False)
+
+        self.btn_3d = QPushButton()
+        self.btn_3d.setIcon(qta.icon('fa5s.cube'))
+        self.btn_3d.setToolTip("Generate 3D Model")
+        self.btn_3d.clicked.connect(self.on_generate_3d_clicked)
+        self.btn_3d.setEnabled(False)
+
+        control_layout.addSpacing(10)
+        control_layout.addWidget(self.btn_measure)
+        control_layout.addWidget(self.btn_mode_toggle)
+        control_layout.addWidget(self.btn_text)
+        control_layout.addWidget(self.btn_3d) # ADD HERE
+        control_layout.addStretch()
 
         # Status Label - Moved to StatusBar
         self.status_label = QLabel("")
@@ -337,6 +352,8 @@ class PDFViewerApp(QMainWindow):
                 self.btn_analyse.hide()
                 self.toggle_container.show()
                 self.status_label.setText("Analysis Ready")
+
+                self.btn_3d.setEnabled(True)
             else:
                 self.legend.refresh_legend({"rooms": [], "icons": []})
                 self.legend.set_visibility(False, False)
@@ -348,6 +365,8 @@ class PDFViewerApp(QMainWindow):
                 self.right_stack.setCurrentIndex(1) # Show legend/empty
                 # self.btn_show_chat.setChecked(True) # Don't force chat check?
                 self.status_label.setText("Ready to Analyze")
+
+                self.btn_3d.setEnabled(False)
             
             if viewer.pixel_to_unit_ratio is not None:
                 # self.btn_measure.setText("Re-calibrate Scale")
@@ -778,3 +797,23 @@ class PDFViewerApp(QMainWindow):
                 try: os.remove(f)
                 except: pass
         super().closeEvent(event)
+
+    def on_generate_3d_clicked(self):
+        viewer = self.tabs.currentWidget()
+        if not isinstance(viewer, DocumentViewer) or not viewer.has_analysis_data:
+            return
+
+        # Prompt for Wall Height
+        default_height = 2.4
+        height, ok = QInputDialog.getDouble(
+            self, 
+            "Wall Height", 
+            "Enter wall height (in real-world units):", 
+            default_height, 0.1, 100.0, 2
+        )
+        
+        if ok:
+            # Generate and add the 3D Tab
+            viewer_3d = ThreeDViewer(viewer.boq_data, height, viewer.pixel_to_unit_ratio)
+            self.tabs.addTab(viewer_3d, f"3D View: {os.path.basename(viewer.file_path)}")
+            self.tabs.setCurrentWidget(viewer_3d)
