@@ -18,7 +18,7 @@ class DocumentViewer(QWidget):
         self.original_pixmap = None
         self.room_pixmap = None
         self.item_pixmap = None
-        self.ocr_pixmap = None  # <--- NEW
+        self.ocr_pixmap = None
         
         self.boq_data = None
         self.chat_log = [] 
@@ -31,11 +31,11 @@ class DocumentViewer(QWidget):
         # Visibility Toggles
         self.show_rooms = False
         self.show_items = False
-        self.show_ocr = False   # <--- NEW
+        self.show_ocr = False
         
         self.zoom_level = 1.0
         self.has_analysis_data = False
-        self.has_ocr_data = False # <--- NEW
+        self.has_ocr_data = False
         
         self.mode = "grab" 
         self.completed_shapes = [] 
@@ -93,8 +93,6 @@ class DocumentViewer(QWidget):
         """Toggles the visibility of the OCR layer."""
         self.show_ocr = visible
         self.update_view()
-
-    # ... (Rest of measurement/mouse methods remain unchanged) ...
 
     def select_item_type(self, item_name):
         self.selected_item_class = item_name
@@ -386,7 +384,9 @@ class DocumentViewer(QWidget):
     def draw_ai_shapes(self, painter, data_key, target_label, color):
         painter.setPen(QPen(color, 4))
         painter.setBrush(QColor(color.red(), color.green(), color.blue(), 80))
-        painter.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        
+        instance_counter = 1 # Keep track of which instance we are drawing
+        
         for item in self.boq_data.get(data_key, []):
             if item.get("label") == target_label:
                 raw_pts = item.get("points", [])
@@ -400,13 +400,33 @@ class DocumentViewer(QWidget):
                         continue
                 if pts:
                     painter.drawPolygon(QPolygonF(pts))
+                    
+                    centroid = self.calculate_centroid(pts)
+                    
+                    # Draw Instance Number
+                    painter.setFont(QFont("Segoe UI", 16, QFont.Bold))
+                    num_str = str(instance_counter)
+                    
+                    # Draw a white outline behind the black text for maximum visibility
+                    painter.setPen(QPen(Qt.white, 3))
+                    painter.drawText(centroid.toPoint() + QPoint(1,1), num_str)
+                    painter.setPen(QPen(Qt.black, 3))
+                    painter.drawText(centroid.toPoint(), num_str)
+                    
+                    # Existing Area Text
                     if self.pixel_to_unit_ratio and "area_pixels" in item:
                         area_px = item.get("area_pixels", 0)
                         real_area = area_px * (self.pixel_to_unit_ratio ** 2)
-                        centroid = self.calculate_centroid(pts)
+                        painter.setFont(QFont("Segoe UI", 11, QFont.Bold))
                         painter.setPen(Qt.black)
-                        painter.drawText(centroid.toPoint(), f"{real_area:.2f} m²")
-                        painter.setPen(color)
+                        
+                        # Shift the area text down so it doesn't overlap the big instance number
+                        painter.drawText(centroid.toPoint() + QPoint(0, 20), f"{real_area:.2f} m²")
+                        
+                    # Restore pen and color for the next shape in the loop
+                    painter.setPen(QPen(color, 4))
+                    
+                instance_counter += 1
 
     def set_overlays(self, room_path, item_path, json_data_path=None):
         self.room_pixmap = QPixmap(room_path)

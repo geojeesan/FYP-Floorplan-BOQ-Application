@@ -156,7 +156,7 @@ class ThreeDViewer(QWidget):
         min_x = min_y = float('inf')
         max_x = max_y = float('-inf')
 
-        # --- 1. Process Rooms & Walls ---
+        # 1. Process Rooms & Walls
         for room in self.boq_data.get('rooms', []):
             raw_pts = room.get('points', [])
             if len(raw_pts) < 2: continue
@@ -176,7 +176,7 @@ class ThreeDViewer(QWidget):
             else:
                 self.add_colored_polygon(pts, 0.0, 0.01, [0.2, 0.6, 1.0, 0.3])
 
-        # --- 2. Process Items ---
+        # 2. Process Items
         item_props = {
             1: (1.0, 2.2, [0.0, 0.8, 1.0, 0.4]),   
             3: (0.0, 2.5, [0.6, 0.4, 0.2, 1.0]),   
@@ -218,7 +218,7 @@ class ThreeDViewer(QWidget):
                 props = item_props.get(cid, (0.0, 0.5, [1.0, 0.0, 0.0, 0.8]))
                 self.add_colored_polygon(pts, props[0], props[1], props[2], expand_by=0.02)
 
-        # --- 3. Base Floor ---
+        # 3. Base Floor
         if min_x != float('inf'):
             pad = max((max_x - min_x) * 0.05, 1.0) 
             
@@ -234,7 +234,7 @@ class ThreeDViewer(QWidget):
             # Textured floor sitting exactly on top of the slab
             #self.add_floor_texture(min_x - pad, min_y - pad, max_x + pad, max_y + pad, -0.01, "resources/floor.jpg")
 
-        # --- 4. Render Main Mesh ---
+        # 4. Render Main Mesh
         if self.vertexes:
             mesh = gl.GLMeshItem(
                 vertexes=np.array(self.vertexes), 

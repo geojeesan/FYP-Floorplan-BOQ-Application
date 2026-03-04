@@ -81,7 +81,7 @@ class LegendWidget(QWidget):
 
         #self.layout.addWidget(QLabel("<b>Tools</b>"))
         
-        # --- OCR Button ---
+        # OCR Button
         self.btn_ocr = QPushButton("OCR Text Detection")
         self.btn_ocr.setCheckable(True)
         self.btn_ocr.setCursor(Qt.PointingHandCursor)
@@ -89,7 +89,7 @@ class LegendWidget(QWidget):
         self.btn_ocr.clicked.connect(self.on_ocr_clicked)
         self.layout.addWidget(self.btn_ocr)
 
-        # --- OCR Progress Bar ---
+        # OCR Progress Bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 0) # Indeterminate
         self.progress_bar.setFixedHeight(10)
@@ -97,7 +97,7 @@ class LegendWidget(QWidget):
         self.progress_bar.setVisible(False)
         self.layout.addWidget(self.progress_bar)
 
-        # --- OCR Label Toggle ---
+        # OCR Label Toggle
         self.btn_toggle_ocr_labels = QPushButton("Replace text labels with OCR")
         self.btn_toggle_ocr_labels.setCheckable(True)
         self.btn_toggle_ocr_labels.setCursor(Qt.PointingHandCursor)

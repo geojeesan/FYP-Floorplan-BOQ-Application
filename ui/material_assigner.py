@@ -2,7 +2,7 @@ import sqlite3
 import json
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, 
-    QPushButton, QMessageBox, QWidget, QFormLayout
+    QPushButton, QMessageBox, QWidget, QFormLayout, QGroupBox, QScrollArea
 )
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtCore import Qt, QSize
@@ -13,23 +13,31 @@ class MaterialAssignmentDialog(QDialog):
     def __init__(self, target_label, item_type, viewer, parent=None):
         super().__init__(parent)
         self.target_label = target_label
-        self.item_type = item_type # 'room', 'structure', or 'icon'
+        self.item_type = item_type
         self.viewer = viewer
         
         self.setWindowTitle(f"Assign Materials: {target_label}")
-        self.setMinimumWidth(400)
+        self.resize(500, 600)
         
         self.layout = QVBoxLayout(self)
-        self.form_layout = QFormLayout()
-        self.layout.addLayout(self.form_layout)
         
-        self.combo_boxes = {} # To keep track of selections
+        # Scroll Area for Multiple Instances
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll_widget = QWidget()
+        self.scroll_layout = QVBoxLayout(self.scroll_widget)
+        self.scroll.setWidget(self.scroll_widget)
+        self.layout.addWidget(self.scroll)
         
-        # Determine which categories (database tables) to show based on the item
+        self.combo_boxes = {} # Format: { instance_idx: { category: combo_box } }
         self.categories = self._determine_categories()
         
-        # Build the UI
-        self._build_dropdowns()
+        # Fetch all instances of this item from the active JSON data
+        self.target_list = self.viewer.boq_data.get('rooms', []) if self.item_type in ['room', 'structure'] else self.viewer.boq_data.get('icons', [])
+        self.instances = [item for item in self.target_list if item.get('label') == self.target_label]
+        
+        # Build UI
+        self._build_ui_for_instances()
         
         # Buttons
         btn_layout = QHBoxLayout()
@@ -45,110 +53,91 @@ class MaterialAssignmentDialog(QDialog):
         btn_layout.addWidget(btn_save)
         self.layout.addLayout(btn_layout)
         
-        # Pre-load existing selections from JSON if they exist
         self._load_existing_assignments()
 
     def _determine_categories(self):
-        """Map the UI item to the corresponding database tables."""
         if self.item_type == 'room':
-            # Rooms typically need Floor and Wall materials
             return ["Floors", "Walls"]
-            
         elif self.item_type == 'structure':
             if self.target_label == "Wall": return ["Walls"]
             return ["Fixtures"]
-            
-        else: # Icons / Items
-            # Exact mapping or pluralized mapping based on your DB schema
+        else:
             mapping = {
-                "Door": "Doors",
-                "Window": "Windows",
-                "Electrical Appliance": "Electrical Appliances",
-                "Closet": "Closet",
-                "Toilet": "Toilet",
-                "Sink": "Sink",
-                "Sauna Bench": "Sauna Bench",
-                "Fire Place": "Fire Place",
-                "Bathtub": "Bathtub",
-                "Chimney": "Chimney"
+                "Door": "Doors", "Window": "Windows", "Electrical Appliance": "Electrical Appliances",
+                "Closet": "Closet", "Toilet": "Toilet", "Sink": "Sink", "Sauna Bench": "Sauna Bench",
+                "Fire Place": "Fire Place", "Bathtub": "Bathtub", "Chimney": "Chimney"
             }
             return [mapping.get(self.target_label, "Fixtures")]
 
-    def _build_dropdowns(self):
+    def _build_ui_for_instances(self):
+        # Pre-fetch database items so we don't query the DB in a loop
+        db_items = {}
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
-        
         for category in self.categories:
-            combo = QComboBox()
-            combo.setIconSize(QSize(40, 40)) # Size for the image preview
-            combo.addItem("--- Select Material ---", userData=None)
-            
+            db_items[category] = []
             try:
-                # Query the database for items in this category
                 cursor.execute(f'SELECT id, item_name, cost, image FROM "{category}"')
-                rows = cursor.fetchall()
+                db_items[category] = cursor.fetchall()
+            except sqlite3.Error as e:
+                print(f"DB Error fetching {category}: {e}")
+        conn.close()
+
+        # Build a group box for each instance found in the JSON
+        for idx, inst in enumerate(self.instances):
+            group = QGroupBox(f"{self.target_label} {idx + 1}")
+            group.setStyleSheet("QGroupBox { font-weight: bold; border: 1px solid #aaa; border-radius: 5px; margin-top: 10px; padding-top: 15px; }")
+            form_layout = QFormLayout(group)
+            
+            self.combo_boxes[idx] = {}
+            
+            for category in self.categories:
+                combo = QComboBox()
+                combo.setIconSize(QSize(40, 40))
+                combo.addItem(f"-- Select {category} ---", userData=None)
                 
-                for row_id, name, cost, image_blob in rows:
+                for row_id, name, cost, image_blob in db_items[category]:
                     display_text = f"[ID: {row_id}] {name} - £{cost:.2f}"
-                    
-                    # Process the image BLOB
                     icon = QIcon()
                     if image_blob:
                         pixmap = QPixmap()
                         pixmap.loadFromData(image_blob)
                         if not pixmap.isNull():
                             icon = QIcon(pixmap)
-                            
                     combo.addItem(icon, display_text, userData={"id": row_id, "name": name, "cost": cost, "table": category})
-            except sqlite3.Error as e:
-                print(f"DB Error fetching {category}: {e}")
                 
-            self.combo_boxes[category] = combo
-            self.form_layout.addRow(f"{category}:", combo)
-            
-        conn.close()
+                self.combo_boxes[idx][category] = combo
+                form_layout.addRow(f"{category}:", combo)
+                
+            self.scroll_layout.addWidget(group)
+        self.scroll_layout.addStretch()
 
     def _load_existing_assignments(self):
-        """Looks into the viewer's boq_data to set the dropdowns if already assigned."""
-        if not self.viewer or not self.viewer.boq_data: return
-        
-        # Search for the first instance of this label to grab its current materials
-        target_list = self.viewer.boq_data.get('rooms', []) if self.item_type in ['room', 'structure'] else self.viewer.boq_data.get('icons', [])
-        
-        for item in target_list:
-            if item.get('label') == self.target_label:
-                materials = item.get('materials', {})
-                for category, combo in self.combo_boxes.items():
-                    if category in materials:
-                        mat_id = materials[category].get('id')
-                        # Find the index in the combobox matching this ID
-                        for i in range(combo.count()):
-                            data = combo.itemData(i)
-                            if data and data.get('id') == mat_id:
-                                combo.setCurrentIndex(i)
-                                break
-                break # Only need to read from the first match
+        for idx, item in enumerate(self.instances):
+            materials = item.get('materials', {})
+            for category, combo in self.combo_boxes[idx].items():
+                if category in materials:
+                    mat_id = materials[category].get('id')
+                    for i in range(combo.count()):
+                        data = combo.itemData(i)
+                        if data and data.get('id') == mat_id:
+                            combo.setCurrentIndex(i)
+                            break
 
     def save_assignments(self):
         if not self.viewer or not self.viewer.boq_data:
-            QMessageBox.warning(self, "Error", "No active document data found.")
             return
             
-        # Collect selected data
-        new_materials = {}
-        for category, combo in self.combo_boxes.items():
-            data = combo.currentData()
-            if data:
-                new_materials[category] = data
+        # Apply selections back to the specific instances
+        for idx, item in enumerate(self.instances):
+            new_materials = {}
+            for category, combo in self.combo_boxes[idx].items():
+                data = combo.currentData()
+                if data:
+                    new_materials[category] = data
+            item['materials'] = new_materials
                 
-        # Apply to all instances of this label in the JSON data
-        target_list = self.viewer.boq_data.get('rooms', []) if self.item_type in ['room', 'structure'] else self.viewer.boq_data.get('icons', [])
-        
-        for item in target_list:
-            if item.get('label') == self.target_label:
-                item['materials'] = new_materials
-                
-        # Save changes to the JSON file
+        # Save to JSON
         if self.viewer.json_data_path:
             try:
                 with open(self.viewer.json_data_path, 'w') as f:
@@ -157,6 +146,3 @@ class MaterialAssignmentDialog(QDialog):
                 self.accept()
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save JSON:\n{e}")
-        else:
-            QMessageBox.warning(self, "Warning", "Could not find JSON file path to save.")
-            self.reject()

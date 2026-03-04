@@ -72,7 +72,7 @@ class PDFViewerApp(QMainWindow):
         self.btn_big_open.clicked.connect(self.open_file)
         start_layout.addWidget(self.btn_big_open, alignment=Qt.AlignCenter)
         
-        # --- NEW: Recent Files Section ---
+        # Recent Files Section
         recent_label = QLabel("Recent Files")
         recent_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #eeeeee;")
         start_layout.addWidget(recent_label, alignment=Qt.AlignCenter)
@@ -100,7 +100,7 @@ class PDFViewerApp(QMainWindow):
         self.center_stack.addWidget(self.start_screen) # Index 0
         self.center_stack.addWidget(self.tabs)       # Index 1
 
-        # --- Right Sidebar Configuration ---
+        # Right Sidebar Configuration
         self.right_sidebar = QWidget()
         self.right_sidebar.setFixedWidth(320)
         self.right_layout = QVBoxLayout(self.right_sidebar)
@@ -436,7 +436,7 @@ class PDFViewerApp(QMainWindow):
                 self.legend.btn_ocr.setChecked(False)
             self.legend.btn_ocr.blockSignals(False)
             
-            # --- Update Segmentation Toggles in Legend ---
+            # Update Segmentation Toggles in Legend
             self.legend.btn_toggle_rooms.blockSignals(True)
             self.legend.btn_toggle_items.blockSignals(True)
             self.legend.btn_toggle_rooms.setChecked(viewer.show_rooms)
@@ -578,7 +578,7 @@ class PDFViewerApp(QMainWindow):
         self.update_tabs_visibility()
         self.update_toolbar_state()
 
-    # --- OCR Handling ---
+    # OCR Handling
     def on_ocr_requested(self, is_checked):
         viewer = self.tabs.currentWidget()
         if not isinstance(viewer, DocumentViewer): return
@@ -610,7 +610,7 @@ class PDFViewerApp(QMainWindow):
             viewer.set_ocr_layer(layer_path)
             self.temp_files.append(layer_path)
             
-            # --- Match OCR to Rooms ---
+            # Match OCR to Rooms
             if viewer.has_analysis_data and viewer.boq_data:
                 
                 # Combine OCR results with Manual Text
@@ -686,7 +686,7 @@ class PDFViewerApp(QMainWindow):
                     # Found match
                     text = item.get('text', '').strip()
                     
-                    # --- Rules ---
+                    # OCR Rules
                     # 1. Ignore if it's just a number (e.g. "45", "12.5") without unit
                     import re
                     # Regex checks if string is purely numeric (int or float)

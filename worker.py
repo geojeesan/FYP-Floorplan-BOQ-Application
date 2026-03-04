@@ -6,7 +6,7 @@ from PySide6.QtCore import QThread, Signal
 
 import constants
 
-# --- CubiCasa5k Imports ---
+# CubiCasa5k Imports
 try:
     import torch
     import torch.nn as nn
@@ -17,7 +17,7 @@ except ImportError as e:
     print(f"Error importing CubiCasa modules: {e}")
     torch = None
 
-# --- EasyOCR Setup ---
+# EasyOCR Setup
 import easyocr
 import re
 EASYOCR_READER = None
@@ -66,7 +66,6 @@ class CubiCasaWorker(QThread):
             return
 
         try:
-            print("--- Starting CubiCasa Analysis ---")
             fplan = cv2.imread(self.image_path)
             if fplan is None:
                 self.error.emit("Could not read image file.")
@@ -287,7 +286,7 @@ class OCRWorker(QThread):
                 text_str = item["text"].strip()
                 rightside = True
 
-                # --- Rules ---
+                # Rules for Text Post-Processing
                 # 1. Ignore if it's just a number (e.g. "45", "12.5") without unit
                 if re.match(r'^\d+(\.\d+)?$', text_str):
                     continue

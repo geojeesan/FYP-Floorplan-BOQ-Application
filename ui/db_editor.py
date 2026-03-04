@@ -75,7 +75,7 @@ class DatabaseEditorDialog(QDialog):
             
         self.layout = QVBoxLayout(self)
         
-        # --- Top Selector ---
+        # Top Selector
         self.top_layout = QHBoxLayout()
         self.top_layout.addWidget(QLabel("Select Category:"))
         
@@ -90,7 +90,7 @@ class DatabaseEditorDialog(QDialog):
         self.top_layout.addStretch()
         self.layout.addLayout(self.top_layout)
         
-        # --- Model and View ---
+        # Model and View
         self.model = QSqlTableModel(self, self.db)
         self.model.setEditStrategy(QSqlTableModel.OnManualSubmit)
         
@@ -105,7 +105,7 @@ class DatabaseEditorDialog(QDialog):
         self.image_delegate = ImageDelegate(self)
         self.layout.addWidget(self.table_view)
         
-        # --- Bottom Buttons ---
+        # Bottom Buttons
         self.btn_layout = QHBoxLayout()
         self.btn_add = QPushButton("Add Row")
         self.btn_add.clicked.connect(self.add_row)
