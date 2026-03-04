@@ -2,8 +2,10 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QProgressBar
 )
 from PySide6.QtCore import Qt, Signal
+import qtawesome as qta
 import constants
 from .viewer import DocumentViewer
+from .material_assigner import MaterialAssignmentDialog
 
 class LegendWidget(QWidget):
     ocrRequested = Signal(bool) # Signal to Main Window: True=Show/Run, False=Hide
@@ -218,9 +220,15 @@ class LegendWidget(QWidget):
         label_map: dict { name: class_id }
         color_palette: list of colors
         """
+        # Determine specific item type for the material assigner
+        item_type = 'room'
+        if not clickable: 
+            item_type = 'structure'
+        elif not is_room:
+            item_type = 'icon'
+
         for label_name in label_list:
             class_id = label_map[label_name]
-            # Safety check on class_id
             if 0 <= class_id < len(color_palette):
                 c = color_palette[class_id]
             else:
@@ -250,7 +258,32 @@ class LegendWidget(QWidget):
                 row_layout.addWidget(lbl)
             
             row_layout.addStretch()
+            
+            btn_prop = QPushButton()
+            btn_prop.setIcon(qta.icon('fa5s.wrench', color='#aaaaaa'))
+            btn_prop.setFixedSize(24, 24)
+            btn_prop.setCursor(Qt.PointingHandCursor)
+            btn_prop.setToolTip(f"{label_name} Properties")
+            btn_prop.setStyleSheet("""
+                QPushButton { background: transparent; border: none; }
+                QPushButton:hover { background: rgba(255, 255, 255, 30); border-radius: 4px; }
+            """)
+            btn_prop.clicked.connect(lambda checked, n=label_name, t=item_type: self.open_properties(n, t))
+            row_layout.addWidget(btn_prop)
+
             layout.addWidget(row)
+
+    def open_properties(self, label_name, item_type):
+        main_win = self.window()
+        viewer = None
+        if hasattr(main_win, 'tabs'):
+            viewer = main_win.tabs.currentWidget()
+            
+        if not isinstance(viewer, DocumentViewer):
+            return
+            
+        dialog = MaterialAssignmentDialog(label_name, item_type, viewer, self)
+        dialog.exec()
 
     def _get_btn_style(self, is_selected):
         bg = "rgba(255, 255, 255, 60)" if is_selected else "transparent"
