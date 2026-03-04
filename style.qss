@@ -58,3 +58,23 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
 QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
     background: none;
 }
+
+/* Recent Files Area Styling */
+#recentFilesScrollArea {
+    background-color: #3c3c3c; /* Match main view background */
+    border: 1px solid #555555;
+    border-radius: 6px;
+}
+
+#recentFilesContainer {
+    background-color: transparent; /* Allows the scroll area background to show through */
+}
+
+/* Match scrollbars to the dark theme for this specific scroll area */
+#recentFilesScrollArea QScrollBar:vertical {
+    background-color: #3c3c3c;
+}
+
+#recentFilesScrollArea QScrollBar:horizontal {
+    background-color: #3c3c3c;
+}

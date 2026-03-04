@@ -15,6 +15,8 @@ from PySide6.QtCore import Qt, Slot
 from .viewer import DocumentViewer
 from .legend import LegendWidget
 from .chat import AIChatPanel
+from .db_editor import DatabaseEditorDialog
+import database
 
 # Import from parent directory
 from worker import CubiCasaWorker, OCRWorker
@@ -27,6 +29,7 @@ class PDFViewerApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("PDF BOQ Viewer")
+        self.setWindowIcon(QIcon("resources/logo.ico"))
         self.resize(1400, 900)
         self.current_pdf_path = None
         self.temp_files = [] 
@@ -50,14 +53,47 @@ class PDFViewerApp(QMainWindow):
         self.start_screen = QWidget()
         start_layout = QVBoxLayout(self.start_screen)
         start_layout.setAlignment(Qt.AlignCenter)
+        start_layout.setSpacing(15)
         
+        # Logo
+        self.logo_label = QLabel()
+        logo_pixmap = QPixmap("resources/logo.png")
+        if not logo_pixmap.isNull():
+            scaled_logo = logo_pixmap.scaled(200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.logo_label.setPixmap(scaled_logo)
+            self.logo_label.setAlignment(Qt.AlignCenter)
+            start_layout.addWidget(self.logo_label)
+        
+        # Big Open Button
         self.btn_big_open = QPushButton("Open PDF / Image")
-        self.btn_big_open.setFixedSize(300, 100)
-        self.btn_big_open.setStyleSheet("font-size: 24px; font-weight: bold; border-radius: 10px; background-color: #fb9a44; color: white;")
+        self.btn_big_open.setFixedSize(300, 60)
+        self.btn_big_open.setStyleSheet("font-size: 20px; font-weight: bold; border-radius: 10px; background-color: #fb9a44; color: white;")
         self.btn_big_open.setCursor(Qt.PointingHandCursor)
         self.btn_big_open.clicked.connect(self.open_file)
+        start_layout.addWidget(self.btn_big_open, alignment=Qt.AlignCenter)
         
-        start_layout.addWidget(self.btn_big_open)
+        # --- NEW: Recent Files Section ---
+        recent_label = QLabel("Recent Files")
+        recent_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #eeeeee;")
+        start_layout.addWidget(recent_label, alignment=Qt.AlignCenter)
+        
+        self.recent_scroll = QScrollArea()
+        self.recent_scroll.setObjectName("recentFilesScrollArea")
+        self.recent_scroll.setWidgetResizable(True)
+        self.recent_scroll.setFixedSize(400, 200) # Fixed size so it doesn't take over the screen
+        #self.recent_scroll.setStyleSheet("border: 1px solid #ddd; background-color: white;")
+        
+        self.recent_container = QWidget()
+        self.recent_container.setObjectName("recentFilesContainer")
+        self.recent_files_layout = QVBoxLayout(self.recent_container)
+        self.recent_files_layout.setAlignment(Qt.AlignTop)
+        self.recent_scroll.setWidget(self.recent_container)
+        
+        start_layout.addWidget(self.recent_scroll, alignment=Qt.AlignCenter)
+        
+        # Initialize DB and load the list
+        database.init_db()
+        self.load_recent_files()
         
         # Stack to hold Tabs or Start Screen
         self.center_stack = QStackedWidget()
@@ -165,11 +201,17 @@ class PDFViewerApp(QMainWindow):
         self.btn_3d.clicked.connect(self.on_generate_3d_clicked)
         self.btn_3d.setEnabled(False)
 
+        self.btn_db = QPushButton()
+        self.btn_db.setIcon(qta.icon('fa5s.database'))
+        self.btn_db.setToolTip("Material & BOQ Database")
+        self.btn_db.clicked.connect(self.open_database_editor)
+
         control_layout.addSpacing(10)
         control_layout.addWidget(self.btn_measure)
         control_layout.addWidget(self.btn_mode_toggle)
         control_layout.addWidget(self.btn_text)
-        control_layout.addWidget(self.btn_3d) # ADD HERE
+        control_layout.addWidget(self.btn_3d)
+        control_layout.addWidget(self.btn_db)
         control_layout.addStretch()
 
         # Status Label - Moved to StatusBar
@@ -201,7 +243,6 @@ class PDFViewerApp(QMainWindow):
         self.right_sidebar.hide() # Explicitly hide on startup
         self.controls.hide() # Explicitly hide on startup
 
-    # ... (open_file, load_pdf, etc. remain unchanged) ...
     def open_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open File", "", "PDF/Images (*.pdf *.png *.jpg)")
         if path:
@@ -210,8 +251,71 @@ class PDFViewerApp(QMainWindow):
             self.center_stack.setCurrentIndex(1) # Show Tabs
             self.update_tabs_visibility()
 
+    def load_recent_files(self):
+        # Clear existing layout items
+        while self.recent_files_layout.count():
+            child = self.recent_files_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+                
+        recent_files = database.get_recent_files()
+        
+        if not recent_files:
+            lbl = QLabel("No recent files.")
+            lbl.setAlignment(Qt.AlignCenter)
+            lbl.setStyleSheet("color: #aaaaaa;")
+            self.recent_files_layout.addWidget(lbl)
+            return
+
+        for file_id, file_path in recent_files:
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(5, 2, 5, 2)
+            
+            # Show just the filename, but keep full path in tooltip
+            filename = os.path.basename(file_path)
+            
+            btn_file = QPushButton(filename)
+            btn_file.setToolTip(file_path)
+            btn_file.setStyleSheet("""
+                QPushButton { text-align: left; background: transparent; border: none; color: #dddddd; font-size: 14px; }
+                QPushButton:hover { color: #fb9a44; } 
+            """)
+            btn_file.setCursor(Qt.PointingHandCursor)
+            btn_file.clicked.connect(lambda checked, p=file_path: self.open_specific_file(p))
+            
+            # Delete Icon Button
+            btn_del = QPushButton()
+            btn_del.setIcon(qta.icon('fa5s.times', color='#d9534f')) # Red X icon
+            btn_del.setFixedSize(24, 24)
+            btn_del.setCursor(Qt.PointingHandCursor)
+            btn_del.setStyleSheet("border: none; background: transparent;")
+            btn_del.clicked.connect(lambda checked, fid=file_id: self.remove_recent_file(fid))
+            
+            row_layout.addWidget(btn_file)
+            row_layout.addWidget(btn_del)
+            self.recent_files_layout.addWidget(row)
+
+    def open_specific_file(self, path):
+        if os.path.exists(path):
+            if path.lower().endswith('.pdf'): 
+                self.load_pdf(path)
+            else: 
+                self.load_single_image(path)
+            self.center_stack.setCurrentIndex(1)
+            self.update_tabs_visibility()
+        else:
+            QMessageBox.warning(self, "File Not Found", f"Could not locate:\n{path}")
+
+    def remove_recent_file(self, file_id):
+        database.delete_recent_file(file_id)
+        self.load_recent_files() # Refresh UI
+
     def load_single_image(self, path):
         self.add_viewer_tab(path, "Image")
+
+        database.add_recent_file(path)
+        self.load_recent_files()
 
     def load_pdf(self, path):
         self.current_pdf_path = path
@@ -253,6 +357,9 @@ class PDFViewerApp(QMainWindow):
             self.tabs.addTab(viewer, os.path.basename(path))
             self.tabs.setCurrentWidget(viewer)
             self.ensure_plus_tab()
+
+            database.add_recent_file(path)
+            self.load_recent_files()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not load PDF: {e}")
 
@@ -371,11 +478,11 @@ class PDFViewerApp(QMainWindow):
             if viewer.pixel_to_unit_ratio is not None:
                 # self.btn_measure.setText("Re-calibrate Scale")
                 self.btn_measure.setToolTip("Re-calibrate Scale")
-                self.btn_measure.setIcon(qta.icon('fa5s.ruler-vertical', color='orange'))
+                self.btn_measure.setIcon(qta.icon('fa5s.ruler-vertical'))
             elif len(viewer.current_path) > 0 or len(viewer.completed_shapes) > 0:
                 # self.btn_measure.setText("Re-measure Area")
                 self.btn_measure.setToolTip("Re-measure Area")
-                self.btn_measure.setIcon(qta.icon('fa5s.ruler-combined', color='blue'))
+                self.btn_measure.setIcon(qta.icon('fa5s.ruler-combined', color='orange'))
             else:
                 # self.btn_measure.setText("Measure Area")
                 self.btn_measure.setToolTip("Measure Area")
@@ -817,3 +924,11 @@ class PDFViewerApp(QMainWindow):
             viewer_3d = ThreeDViewer(viewer.boq_data, height, viewer.pixel_to_unit_ratio)
             self.tabs.addTab(viewer_3d, f"3D View: {os.path.basename(viewer.file_path)}")
             self.tabs.setCurrentWidget(viewer_3d)
+
+    def open_database_editor(self):
+        # Ensure the database is initialized before opening
+        database.init_db()
+        
+        # Open the popup dialog
+        dlg = DatabaseEditorDialog(parent=self)
+        dlg.exec()
