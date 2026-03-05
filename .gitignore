@@ -5,3 +5,4 @@ __pycache__/
 model_best_val_loss_var.pkl
 Difference in Room Annotation.pdf
 output_segmentation.png
+.env

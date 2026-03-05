@@ -18,3 +18,12 @@ requests
 qtawesome
 pyqtgraph
 PyOpenGL
+langchain
+langchain-core
+langgraph
+langchain-ollama
+langchain-openai
+langchain-google-genai
+langchain-anthropic
+langchain-openrouter
+python-dotenv
