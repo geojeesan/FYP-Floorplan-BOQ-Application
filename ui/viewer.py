@@ -458,6 +458,11 @@ class DocumentViewer(QWidget):
         data = copy.deepcopy(self.boq_data)
         
         ratio = self.pixel_to_unit_ratio
+
+        data['calibration_info'] = {
+            "is_calibrated": ratio is not None,
+            "pixel_to_unit_ratio": ratio if ratio is not None else 1.0
+        }
         
         # Helper to convert
         def convert_area(px_area):
@@ -470,13 +475,13 @@ class DocumentViewer(QWidget):
             area_px = room.get('area_pixels', 0)
             room['area_readable'] = convert_area(area_px)
             # Remove raw points to save token context window for LLM
-            if 'points' in room: del room['points']
+            #if 'points' in room: del room['points']
             if 'box_2d' in room: del room['box_2d']
 
         # Apply to Icons (if they had area, but usually they are counts/points)
         for icon in data.get('icons', []):
             # Icons usually point locations, but if we had dimensions we'd scale them
             if 'box_2d' in icon: del icon['box_2d']
-            if 'points' in icon: del icon['points']
+            #if 'points' in icon: del icon['points']
             
         return data

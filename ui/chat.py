@@ -1,5 +1,7 @@
 import os
 import json
+import sqlite3
+from shapely.geometry import Polygon
 from dotenv import load_dotenv
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit, QLineEdit, QComboBox
@@ -15,7 +17,61 @@ from langchain.agents import create_agent
 # Load environment variables (API Keys) from .env file
 load_dotenv()
 
-# Tool Definition
+@tool
+def query_materials_database(query: str) -> str:
+    """
+    Executes a SELECT SQL query on the materials database to retrieve cost or specification data.
+    Use this to find pricing or brand name not found in the floorplan JSON context. DO NOT use this for getting information about the floorplan itself, only for external data about materials.
+    Available tables: Floors, Walls, Doors, Windows, Fixtures, Electrical Appliances, Closet, Toilet, Sink, Sauna Bench, Fire Place, Bathtub, Chimney
+    Each table has columns: item_no, item_name, brand_name, cost, unit, markup_percentage
+    """
+    try:
+        db_path = 'boq_materials.db' 
+        
+        # Safety check: Prevent destructive queries
+        if not query.strip().upper().startswith("SELECT"):
+            return "Error: Only SELECT queries are allowed for safety."
+            
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute(query)
+        results = cursor.fetchall()
+        conn.close()
+
+        print(f"Tool run - Executed query: {query} | Results: {results}")  
+        
+        if not results:
+            return "No results found in the database."
+        return str(results)
+    except Exception as e:
+        return f"Database query error: {e}"
+
+@tool
+def convert_units(value: float, from_unit: str, to_unit: str) -> str:
+    """
+    Converts architectural measurements between different units.
+    Supported units: 'sqm', 'sqft', 'm', 'ft', 'mm', 'cm'.
+    """
+    conversions = {
+        ("sqm", "sqft"): 10.7639,
+        ("sqft", "sqm"): 0.092903,
+        ("m", "ft"): 3.28084,
+        ("ft", "m"): 0.3048,
+        ("mm", "m"): 0.001,
+        ("cm", "m"): 0.01,
+        ("m", "mm"): 1000.0,
+    }
+    
+    try:
+        key = (from_unit.lower().strip(), to_unit.lower().strip())
+        if key in conversions:
+            converted_value = value * conversions[key]
+            print(f"Tool run - Converted {value} {from_unit} to {converted_value} {to_unit}")
+            return f"{converted_value:.4f}"
+        return f"Error: Conversion from '{from_unit}' to '{to_unit}' is not supported."
+    except Exception as e:
+        return f"Error converting units: {e}"
+
 @tool
 def calculate(expression: str) -> str:
     """
@@ -25,6 +81,7 @@ def calculate(expression: str) -> str:
     try:
         allowed_names = {"__builtins__": None}
         result = eval(expression, allowed_names, {})
+        print(f"Tool run - Calculated expression: {expression} = {result}")
         return str(result)
     except Exception as e:
         return f"Error calculating: {e}"
@@ -77,7 +134,35 @@ class ChatWorker(QThread):
     def run(self):
         try:
             llm = get_llm(self.provider, self.model)
-            tools = [calculate]
+
+            ratio = 1.0
+            if self.context_data and "calibration_info" in self.context_data:
+                ratio = self.context_data["calibration_info"].get("pixel_to_unit_ratio", 1.0)
+
+            # 2. Define the tool dynamically inside this thread so it inherits the 'ratio' variable
+            @tool
+            def calculate_perimeter(points: list[list[float]]) -> str:
+                """
+                Calculates the real-world perimeter of a room.
+                Args:
+                    points: A list of [x, y] coordinate pairs representing the room's polygon.
+                Returns:
+                    The calculated real-world perimeter as a string.
+                """
+                try:
+                    if not points or len(points) < 3:
+                        return "Error: A polygon must have at least 3 points."
+                    
+                    from shapely.geometry import Polygon
+                    poly = Polygon(points)
+                    # The tool automatically applies the correct scale from the viewer!
+                    perimeter = poly.length * ratio
+                    print (f"Tool run - Calculated perimeter: {perimeter} (using ratio: {ratio})")  # Debug print
+                    return f"{perimeter:.2f}"
+                except Exception as e:
+                    return f"Error calculating perimeter: {e}"
+
+            tools = [calculate, query_materials_database, convert_units, calculate_perimeter]
             agent_executor = create_agent(llm, tools)
 
             context_str = json.dumps(self.context_data, indent=2)
@@ -86,7 +171,10 @@ class ChatWorker(QThread):
                     "You are an expert architectural and floorplan assistant. "
                     "CRITICAL RULES: \n"
                     "1. MATH: You MUST use the 'calculate' tool for EVERY single mathematical operation (addition, multiplication, division, etc.). Never attempt to calculate numbers yourself.\n"
-                    "2. CURRENCY: Always format costs and prices using the British Pound symbol (£) unless the user specifically asks for another currency.\n\n"
+                    "2. GEOMETRY: Use the 'calculate_perimeter' tool if asked about wall lengths, skirting, or perimeters. You only need to pass the room's points; the scale is handled automatically.\n"
+                    "3. MATERIALS: Use the 'query_materials_database' tool to retrieve cost information for materials. Do not use this for getting information about the floorplan itself.\n"
+                    "4. UNITS: Use the 'convert_units' tool to convert measurements between different units.\n"
+                    "5. CURRENCY: Always format costs and prices using the British Pound symbol (£) unless the user specifically asks for another currency.\n\n"
                     f"Floorplan Context Data:\n{context_str}\n\n"
                     "Answer the user's questions based on this data. Keep answers concise."
                 ))
