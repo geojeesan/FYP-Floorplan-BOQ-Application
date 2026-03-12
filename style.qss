@@ -1,80 +1,115 @@
-#thumbnailScrollArea {
-    background-color: #f0f0f0; /* Light background for sidebar */
-    border: none;
+/* Ensure the central widget doesn't block the Mica backdrop */
+#mainContainer {
+    background: transparent;
 }
 
-#mainViewScrollArea {
-    background-color: #3c3c3c; /* Dark gray for main content area */
-    border: none;
+/* Global Typography and Base Text */
+QWidget {
+    font-family: "Segoe UI Variable", "Segoe UI", sans-serif;
+    font-size: 14px;
+    color: #e5e5e5;
 }
 
-/* Vertical Scrollbar */
-QScrollBar:vertical {
-    border: none;
-    background-color: #f0f0f0; /* Default background */
-    width: 8px;
-    margin: 0px;
-}
-#mainViewScrollArea QScrollBar:vertical {
-    background-color: #3c3c3c; /* Match main view background */
-}
-
-QScrollBar::handle:vertical {
-    background-color: #cccccc;
-    min-height: 25px;
-    border-radius: 4px;
-}
-QScrollBar::handle:vertical:hover {
-    background-color: #aaaaaa;
-}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-    height: 0px;
-}
-QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
-    background: none;
-}
-
-/* Horizontal Scrollbar */
-QScrollBar:horizontal {
-    border: none;
-    background-color: #f0f0f0; /* Default background */
-    height: 8px;
-    margin: 0px;
-}
-#mainViewScrollArea QScrollBar:horizontal {
-    background-color: #3c3c3c; /* Match main view background */
-}
-QScrollBar::handle:horizontal {
-    background-color: #cccccc;
-    min-width: 25px;
-    border-radius: 4px;
-}
-QScrollBar::handle:horizontal:hover {
-    background-color: #aaaaaa;
-}
-QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
-    width: 0px;
-}
-QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
-    background: none;
-}
-
-/* Recent Files Area Styling */
+/* Fluent Panels & Scroll Areas */
+#thumbnailScrollArea, 
+#mainViewScrollArea, 
 #recentFilesScrollArea {
-    background-color: #3c3c3c; /* Match main view background */
-    border: 1px solid #555555;
-    border-radius: 6px;
+    /* Replaces the hardcoded #3c3c3c with a semi-transparent dark layer [cite: 2, 12] */
+    background-color: rgba(255, 255, 255, 20); 
+    border-radius: 10px; /* Fluent rounded edges [cite: 13] */
 }
 
+QAbstractScrollArea::viewport, QTextEdit, QStackedWidget, QLabel, QWidget {
+    background: transparent;
+    border: none;
+}
+
+QScrollArea {
+    background-color: rgba(255, 255, 255, 10); 
+    border: 0px;
+    border-radius: 12px;
+}
+
+DocumentViewer,
+LegendWidget,
+AIChatPanel,
+QWidget#mainContainer,
 #recentFilesContainer {
-    background-color: transparent; /* Allows the scroll area background to show through */
+    background-color: transparent;
 }
 
-/* Match scrollbars to the dark theme for this specific scroll area */
-#recentFilesScrollArea QScrollBar:vertical {
-    background-color: #3c3c3c;
+#thumbnailScrollArea {
+    background-color: rgba(20, 20, 20, 100); /* Slightly darker for the sidebar [cite: 1] */
 }
 
-#recentFilesScrollArea QScrollBar:horizontal {
-    background-color: #3c3c3c;
+/* Tab Widget Styling */
+QTabWidget::pane {
+    border: 0px solid rgba(255, 255, 255, 20);
+    border-radius: 8px;
+    background: transparent;
+}
+QTabBar::tab {
+    background: rgba(255, 255, 255, 20);
+    border: 0px solid rgba(255, 255, 255, 10);
+    border-bottom: none;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+    padding: 6px 16px;
+    margin-right: 2px;
+}
+QTabBar::tab:selected {
+    background: rgba(255, 255, 255, 30);
+    border: 0px solid rgba(255, 255, 255, 30);
+    border-bottom: 2px solid #fb9a44; /* Brand accent indicator */
+}
+QTabBar::tab:hover:!selected {
+    background: rgba(255, 255, 255, 30);
+}
+
+/* Standard Fluent Buttons */
+QPushButton {
+    background-color: rgba(255, 255, 255, 20);
+    border-radius: 6px;
+    padding: 12px 12px;
+}
+QPushButton:hover {
+    background-color: rgba(255, 255, 255, 30);
+}
+QPushButton:pressed {
+    background-color: rgba(255, 255, 255, 10);
+    color: rgba(255, 255, 255, 150);
+}
+
+/* Inputs & Forms */
+QLineEdit, QInputDialog {
+    background-color: rgba(0, 0, 0, 100);
+    border: 1px solid rgba(255, 255, 255, 20);
+    border-bottom: 2px solid rgba(255, 255, 255, 50); /* Fluent underline */
+    border-radius: 4px;
+    padding: 4px 8px;
+}
+QLineEdit:focus {
+    border-bottom: 2px solid #fb9a44; /* Focus state accent */
+}
+
+/* Scrollbars */
+QScrollBar:vertical, QScrollBar:horizontal {
+    background: transparent; /* Remove old solid backgrounds [cite: 4, 8, 14] */
+    width: 10px;
+    height: 10px;
+    margin: 0px;
+}
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
+    background-color: rgba(255, 255, 255, 40);
+    min-height: 25px;
+    min-width: 25px;
+    border-radius: 5px; /* Fully rounded pill shape [cite: 6, 10] */
+}
+QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
+    background-color: rgba(255, 255, 255, 80);
+}
+QScrollBar::add-line, QScrollBar::sub-line, 
+QScrollBar::add-page, QScrollBar::sub-page {
+    background: none;
+    border: none;
 }

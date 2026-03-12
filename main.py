@@ -8,13 +8,19 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QPixmap, QIcon
 from PySide6.QtCore import Qt
 
+class MARGINS(ctypes.Structure):
+    _fields_ = [("cxLeftWidth", ctypes.c_int),
+                ("cxRightWidth", ctypes.c_int),
+                ("cyTopHeight", ctypes.c_int),
+                ("cyBottomHeight", ctypes.c_int)]
+
 class AcrylicSplashScreen(QWidget):
     """Custom Splash Screen with a rounded, semi-transparent background."""
     def __init__(self, logo_path):
         super().__init__()
         
         # 1. Window setup for frameless, transparent background
-        self.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint | Qt.SplashScreen)
+        self.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.CustomizeWindowHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
         
         # Main layout (invisible, just holds the styled container)
@@ -24,14 +30,6 @@ class AcrylicSplashScreen(QWidget):
         # 2. The Background Container
         self.container = QFrame(self)
         self.container.setObjectName("BackgroundContainer")
-
-        self.container.setStyleSheet("""
-            #BackgroundContainer {
-                background-color: rgba(30, 30, 30, 200); /* Dark semi-transparent */
-                border-radius: 20px; /* Rounded edges */
-                border: 1px solid rgba(255, 255, 255, 40); /* Subtle light rim */
-            }
-        """)
         
         # Layout inside the container
         container_layout = QVBoxLayout(self.container)
@@ -83,6 +81,27 @@ class AcrylicSplashScreen(QWidget):
         """Helper to update the bar and text easily."""
         self.progress_bar.setValue(value)
         self.message_label.setText(message)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        
+        if os.name == 'nt':
+            try:
+                hwnd = int(self.winId())
+                
+                # Enable Dark Mode & MicaAlt
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, 20, ctypes.byref(ctypes.c_int(1)), ctypes.sizeof(ctypes.c_int)
+                )
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, 38, ctypes.byref(ctypes.c_int(2)), ctypes.sizeof(ctypes.c_int)
+                )
+                
+                margins = MARGINS(-1, -1, -1, -1)
+                ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
+                
+            except Exception as e:
+                print(f"Mica not supported on this OS version: {e}")
 
 def main():
     if os.name == 'nt': 

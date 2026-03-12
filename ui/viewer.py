@@ -245,6 +245,8 @@ class DocumentViewer(QWidget):
             old_zoom = self.zoom_level
             if event.angleDelta().y() > 0: self.zoom_level *= 1.1
             else: self.zoom_level /= 1.1
+            self.zoom_level = max(self.zoom_level, 0.1)
+            self.zoom_level = min(self.zoom_level, 50.0)
             self.update_view()
             zoom_factor = self.zoom_level / old_zoom
             new_h = (scrollbar_pos.x() + local_pos.x()) * zoom_factor - local_pos.x()

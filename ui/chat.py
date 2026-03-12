@@ -329,7 +329,7 @@ class AIChatPanel(QWidget):
         <div align="{align}">
             <table style="background-color: {color}; border-radius: 10px; {margin}">
                 <tr>
-                    <td style="padding: 10px; color: black; font-size: 13px;">
+                    <td style="padding: 10px; color: black; border-radius: 10px; font-size: 13px;">
                         {text}
                     </td>
                 </tr>
