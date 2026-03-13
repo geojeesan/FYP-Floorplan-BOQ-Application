@@ -2,7 +2,7 @@ import json
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QProgressBar,
     QMessageBox, QInputDialog, QDialog, QFormLayout, QLineEdit, QComboBox,
-    QDialogButtonBox
+    QDialogButtonBox, QColorDialog
 )
 from PySide6.QtCore import Qt, Signal, QPointF
 from PySide6.QtGui import QPainter, QPolygonF, QColor
@@ -43,6 +43,16 @@ class AddMeasurementDialog(QDialog):
 
 class LegendButton(QPushButton):
     """Custom button to emit a double click signal."""
+    doubleClicked = Signal()
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.doubleClicked.emit()
+        super().mouseDoubleClickEvent(event)
+
+
+class ColorLabel(QLabel):
+    """Custom label to emit a double click signal for color changing."""
     doubleClicked = Signal()
 
     def mouseDoubleClickEvent(self, event):
@@ -135,6 +145,7 @@ class LegendWidget(QWidget):
 
         # OCR Button
         self.btn_ocr = QPushButton("OCR Text Detection")
+        self.btn_ocr.setIcon(qta.icon('fa5s.camera', color='white'))
         self.btn_ocr.setCheckable(True)
         self.btn_ocr.setCursor(Qt.PointingHandCursor)
         self.btn_ocr.setStyleSheet(self._get_ocr_btn_style(False))
@@ -272,8 +283,8 @@ class LegendWidget(QWidget):
         return f"""
             QPushButton {{
                 text-align: center; 
-                border: 1px solid rgba(251, 154, 68, 100); 
-                background-color: rgba(251, 154, 68, 60); 
+                border: 1px solid #555; 
+                background-color: "transparent"; 
                 padding: 6px;
                 color: white;
                 font-weight: bold;
@@ -285,8 +296,8 @@ class LegendWidget(QWidget):
         """
 
     def _get_ocr_btn_style(self, is_selected):
-        bg = "rgba(0, 200, 255, 60)" if is_selected else "transparent"
-        border = "1px solid rgba(0, 200, 255, 100)" if is_selected else "1px solid #555"
+        bg = "rgba(251, 154, 68, 90)" if is_selected else "transparent"
+        border = "1px solid rgba(251, 154, 68, 100)" if is_selected else "1px solid #555"
         return f"""
             QPushButton {{
                 text-align: center; 
@@ -298,7 +309,7 @@ class LegendWidget(QWidget):
                 border-radius: 4px;
             }}
             QPushButton:hover {{
-                background-color: rgba(0, 200, 255, 30);
+                background-color: rgba(251, 154, 68, 90);
             }}
         """
 
@@ -353,6 +364,90 @@ class LegendWidget(QWidget):
         self.structure_container.setVisible(has_structures)
         self.lbl_structures.setVisible(has_structures)
 
+    def change_category_color(self, class_id, is_room, current_color):
+        main_win = self.window()
+        viewer = main_win.current_widget() if hasattr(main_win, 'current_widget') else None
+        
+        if not isinstance(viewer, DocumentViewer) or not viewer.boq_data:
+            return
+
+        initial_qcolor = QColor(current_color[0], current_color[1], current_color[2])
+        new_qcolor = QColorDialog.getColor(initial_qcolor, self, "Select New Color")
+
+        if not new_qcolor.isValid():
+            return
+
+        new_c = (new_qcolor.red(), new_qcolor.green(), new_qcolor.blue())
+
+        # Update Local Palette
+        if is_room:
+            while len(self.room_colors) <= class_id:
+                self.room_colors.append((100, 100, 100))
+            self.room_colors[class_id] = new_c
+        else:
+            while len(self.icon_colors) <= class_id:
+                self.icon_colors.append((100, 100, 100))
+            self.icon_colors[class_id] = new_c
+
+        # Redraw all polygons of this class on the pixmap
+        target_pixmap = viewer.room_pixmap if is_room else viewer.item_pixmap
+        data_key = 'rooms' if is_room else 'icons'
+        target_list = viewer.boq_data.get(data_key, [])
+
+        if target_pixmap and not target_pixmap.isNull():
+            painter = QPainter(target_pixmap)
+            
+            # Use CompositionMode_Source to overwrite the existing pixels exactly for the chosen category
+            painter.setCompositionMode(QPainter.CompositionMode_Source)
+            painter.setBrush(QColor(new_c[0], new_c[1], new_c[2], 140))
+            painter.setPen(Qt.NoPen)
+            
+            for item in target_list:
+                if item.get('class_id') == class_id:
+                    pts = item.get('points', [])
+                    qpts = []
+                    for p in pts:
+                        try:
+                            if isinstance(p, (list, tuple)) and len(p) >= 2:
+                                qpts.append(QPointF(float(p[0]), float(p[1])))
+                        except:
+                            pass
+                    if qpts:
+                        painter.drawPolygon(QPolygonF(qpts))
+                        
+            # Restore structural elements if we are modifying rooms so they stay visibly on top
+            if is_room:
+                painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+                for r in target_list:
+                    if r.get('label') in ["Wall", "Railing"]:
+                        cid = r.get('class_id', -1)
+                        if cid == class_id:
+                            continue # Already drawn above
+                            
+                        if 0 <= cid < len(self.room_colors):
+                            c_str = self.room_colors[cid]
+                        else:
+                            c_str = (100, 100, 100)
+                            
+                        painter.setBrush(QColor(c_str[0], c_str[1], c_str[2], 140))
+                        
+                        pts = r.get('points', [])
+                        qpts = []
+                        for p in pts:
+                            try:
+                                if isinstance(p, (list, tuple)) and len(p) >= 2:
+                                    qpts.append(QPointF(float(p[0]), float(p[1])))
+                            except:
+                                pass
+                        if qpts:
+                            painter.drawPolygon(QPolygonF(qpts))
+                            
+            painter.end()
+
+        # Update Viewer and Legend Canvas
+        viewer.update_view()
+        self.refresh_legend(viewer.boq_data)
+
     def _add_dynamic_items(self, layout, label_list, label_map, color_palette, is_room, clickable=True):
         item_type = 'room'
         if not clickable: 
@@ -371,10 +466,14 @@ class LegendWidget(QWidget):
             row_layout = QHBoxLayout(row)
             row_layout.setContentsMargins(0, 2, 0, 2)
             
-            color_lbl = QLabel()
+            color_lbl = ColorLabel()
             color_lbl.setFixedSize(14, 14)
             hex_c = f"#{c[0]:02x}{c[1]:02x}{c[2]:02x}"
             color_lbl.setStyleSheet(f"background-color: {hex_c}; border-radius: 2px;")
+            color_lbl.setCursor(Qt.PointingHandCursor)
+            color_lbl.setToolTip("Double-click to change color")
+            # Connect the color label double click event to our new method
+            color_lbl.doubleClicked.connect(lambda cid=class_id, r=is_room, cur_c=c: self.change_category_color(cid, r, cur_c))
             row_layout.addWidget(color_lbl)
 
             if clickable:
@@ -506,7 +605,7 @@ class LegendWidget(QWidget):
                 if qpts:
                     painter.drawPolygon(QPolygonF(qpts))
                     
-        # --- NEW: Restore structural elements (Walls, Railings) ---
+        # Restore structural elements (Walls, Railings)
         if painter and is_room:
             painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
             for r in target_list:
@@ -517,7 +616,6 @@ class LegendWidget(QWidget):
                     else:
                         c = (100, 100, 100)
                     
-                    # 140 is the alpha used originally by CubiCasa overlay
                     painter.setBrush(QColor(c[0], c[1], c[2], 140))
                     painter.setPen(Qt.NoPen)
                     

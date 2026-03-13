@@ -39,9 +39,16 @@ class DocumentViewer(QWidget):
         
         self.mode = "grab" 
         self.completed_shapes = [] 
-        self.current_path = []     
-        self.manual_text_labels = [] # List of {'pos': QPointF, 'text': str}
-        self.is_closed = False     
+        self.current_path = []  
+        self.anchor_points = [] # Tracks the actual structural clicks (anchors)
+        
+        # Drag & Curve State
+        self.is_measuring_drag = False
+        self.is_closing_drag = False
+        self.drag_current_p2 = None
+        self.current_curve_points = []
+        
+        self.manual_text_labels = [] 
         self.temp_mouse_pos = None
         self.pixel_to_unit_ratio = None
         self.last_mouse_pos = QPoint()
@@ -83,14 +90,12 @@ class DocumentViewer(QWidget):
         self.clear_measurements()
 
     def set_ocr_layer(self, layer_path):
-        """Called when OCRWorker finishes."""
         self.ocr_pixmap = QPixmap(layer_path)
         self.has_ocr_data = True
         self.show_ocr = True
         self.update_view()
 
     def toggle_ocr(self, visible):
-        """Toggles the visibility of the OCR layer."""
         self.show_ocr = visible
         self.update_view()
 
@@ -131,19 +136,21 @@ class DocumentViewer(QWidget):
     def clear_measurements(self):
         self.completed_shapes = []
         self.current_path = []
+        self.anchor_points = []
+        self.is_measuring_drag = False
+        self.is_closing_drag = False
+        self.drag_current_p2 = None
+        self.current_curve_points = []
         self.temp_mouse_pos = None
-        self.is_closed = False
         self.update_view()
 
     def get_image_coords(self, pos):
         return QPointF(pos) / self.zoom_level
     
     def recalibrate(self):
-        if len(self.current_path) >= 2:
-            # Recalibrate based on the current active segment
+        if len(self.anchor_points) >= 2:
             self.calculate_initial_scale()
         else:
-            # Reset the scale and enter measure mode so the next drawn line sets the new scale
             self.pixel_to_unit_ratio = None
             self.set_mode("measure")
             
@@ -162,33 +169,37 @@ class DocumentViewer(QWidget):
             local_pos = self.label.mapFromGlobal(event.globalPos())
             img_pos = self.get_image_coords(local_pos)
             tolerance = 15 / self.zoom_level
-            for i, pt in enumerate(self.current_path):
-                dist = ((img_pos.x() - pt.x())**2 + (img_pos.y() - pt.y())**2)**0.5
+            
+            is_close = False
+            if len(self.anchor_points) >= 3:
+                first_pt = self.anchor_points[0]
+                dist = ((img_pos.x() - first_pt.x())**2 + (img_pos.y() - first_pt.y())**2)**0.5
                 if dist < tolerance:
-                    if i == len(self.current_path) - 1:
-                        self.current_path.pop()
-                    else:
-                        new_shape = self.current_path[i:]
-                        self.completed_shapes.append(new_shape)
-                        self.current_path = [] 
-                    self.update_view()
-                    return
-            self.current_path.append(img_pos)
-            if len(self.current_path) == 2 and self.pixel_to_unit_ratio is None:
-                self.calculate_initial_scale()
+                    is_close = True
+
+            self.is_measuring_drag = True
+            
+            if is_close:
+                self.drag_current_p2 = self.anchor_points[0]
+                self.is_closing_drag = True
+            else:
+                self.drag_current_p2 = img_pos
+                self.is_closing_drag = False
+                
+            self.current_curve_points = [self.drag_current_p2]
+            
             if hasattr(self.window(), 'update_toolbar_state'):
                 self.window().update_toolbar_state()
             self.update_view()
+            
         elif self.mode == "text" and event.button() == Qt.LeftButton:
             local_pos = self.label.mapFromGlobal(event.globalPos())
             img_pos = self.get_image_coords(local_pos)
             
-            # Check if clicking on existing text to edit (simple hit test)
             edited = False
             tolerance = 20 / self.zoom_level
             for item in self.manual_text_labels:
                 pos = item['pos']
-                # Approx interaction (just distance to point)
                 dist = ((img_pos.x() - pos.x())**2 + (img_pos.y() - pos.y())**2)**0.5
                 if dist < tolerance:
                     text, ok = QInputDialog.getText(self, "Edit Text", "Edit label:", text=item['text'])
@@ -213,16 +224,48 @@ class DocumentViewer(QWidget):
 
     def mouseMoveEvent(self, event):
         if self.mode == "measure":
-            if self.is_closed:
-                self.temp_mouse_pos = None
-                return
             if hasattr(event, 'globalPos'):
                 local_pos = self.label.mapFromGlobal(event.globalPos())
             else:
                 local_pos = event.pos()
-            self.temp_mouse_pos = self.get_image_coords(local_pos)
-            if len(self.current_path) > 0:
+            img_pos = self.get_image_coords(local_pos)
+            
+            if self.is_measuring_drag and len(self.anchor_points) > 0:
+                P1 = self.anchor_points[-1]
+                P2 = self.drag_current_p2
+                M = img_pos
+                
+                # Drag Vector (Current Mouse - Anchor 2)
+                Vx = M.x() - P2.x()
+                Vy = M.y() - P2.y()
+                
+                if (Vx**2 + Vy**2)**0.5 < 5 / self.zoom_level:
+                    # If drag distance is very small, maintain straight line
+                    self.current_curve_points = [P2]
+                else:
+                    # Curve opposite to drag vector
+                    Mid_x = (P1.x() + P2.x()) / 2
+                    Mid_y = (P1.y() + P2.y()) / 2
+                    
+                    # Offset control point from midpoint in opposite direction of drag
+                    Cx = Mid_x - Vx * 1.5 
+                    Cy = Mid_y - Vy * 1.5
+                    
+                    # Discretize Bezier curve
+                    pts = []
+                    for i in range(1, 21):
+                        t = i / 20.0
+                        x = (1-t)**2 * P1.x() + 2*(1-t)*t * Cx + t**2 * P2.x()
+                        y = (1-t)**2 * P1.y() + 2*(1-t)*t * Cy + t**2 * P2.y()
+                        pts.append(QPointF(x, y))
+                    self.current_curve_points = pts
                 self.update_view()
+            else:
+                # Normal drawing dashed line to mouse
+                self.temp_mouse_pos = img_pos
+                if len(self.current_path) > 0:
+                    self.update_view()
+                    
         elif self.mode == "grab" and event.buttons() == Qt.LeftButton:
             current_pos = event.globalPos()
             delta = current_pos - self.last_mouse_pos
@@ -235,6 +278,35 @@ class DocumentViewer(QWidget):
     def mouseReleaseEvent(self, event):
         if self.mode == "grab":
             self.label.setCursor(Qt.OpenHandCursor)
+        elif self.mode == "measure" and self.is_measuring_drag and event.button() == Qt.LeftButton:
+            self.is_measuring_drag = False
+            
+            if self.is_closing_drag:
+                # Commit closure and save polygon
+                self.current_path.extend(self.current_curve_points)
+                self.completed_shapes.append(self.current_path)
+                self.current_path = []
+                self.anchor_points = []
+            else:
+                if len(self.anchor_points) == 0:
+                    # First point
+                    self.anchor_points.append(self.drag_current_p2)
+                    self.current_path.append(self.drag_current_p2)
+                else:
+                    # Committing intermediate line/curve
+                    self.anchor_points.append(self.drag_current_p2)
+                    self.current_path.extend(self.current_curve_points)
+                    
+                    if len(self.anchor_points) == 2 and self.pixel_to_unit_ratio is None:
+                        self.calculate_initial_scale()
+                        
+            self.drag_current_p2 = None
+            self.current_curve_points = []
+            self.is_closing_drag = False
+            
+            if hasattr(self.window(), 'update_toolbar_state'):
+                self.window().update_toolbar_state()
+            self.update_view()
 
     def wheelEvent(self, event: QWheelEvent):
         if event.modifiers() & Qt.ControlModifier:
@@ -256,8 +328,8 @@ class DocumentViewer(QWidget):
             event.accept()
 
     def calculate_initial_scale(self):
-        if len(self.current_path) >= 2:
-            p1, p2 = self.current_path[0], self.current_path[1]
+        if len(self.anchor_points) >= 2:
+            p1, p2 = self.anchor_points[0], self.anchor_points[1]
             dist_px = ((p2.x() - p1.x())**2 + (p2.y() - p1.y())**2)**0.5
             val, ok = QInputDialog.getDouble(self, "Set Scale", 
                                             "Enter real-world length (m) for this segment:", 
@@ -282,12 +354,11 @@ class DocumentViewer(QWidget):
         final_pixmap = QPixmap(self.original_pixmap)
         painter_base = QPainter(final_pixmap)
         
-        # Draw Layers in order
         if self.show_rooms and self.room_pixmap: 
             painter_base.drawPixmap(0, 0, self.room_pixmap)
         if self.show_items and self.item_pixmap: 
             painter_base.drawPixmap(0, 0, self.item_pixmap)
-        if self.show_ocr and self.ocr_pixmap:  # <--- NEW
+        if self.show_ocr and self.ocr_pixmap:
             painter_base.drawPixmap(0, 0, self.ocr_pixmap)
             
         painter_base.end()
@@ -310,6 +381,8 @@ class DocumentViewer(QWidget):
 
         main_color = QColor(255, 0, 0)
         painter.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        
+        # Draw Completed Area Shapes
         for shape in self.completed_shapes:
             d_pts = [p * self.zoom_level for p in shape]
             painter.setBrush(QColor(255, 0, 0, 40))
@@ -324,24 +397,46 @@ class DocumentViewer(QWidget):
                 painter.setPen(Qt.white)
                 painter.drawText(centroid.toPoint(), f"{area:.2f} m²")
 
-        if self.current_path:
+        # Draw Current Dynamic Path
+        if self.current_path or self.anchor_points:
             painter.setBrush(Qt.NoBrush)
             painter.setPen(QPen(main_color, 3))
             d_path = [p * self.zoom_level for p in self.current_path]
-            for pt in d_path:
-                painter.setBrush(main_color)
-                painter.drawEllipse(pt.toPoint(), 4, 4)
-            painter.setBrush(Qt.NoBrush)
+            
+            # Connect committed path points
             for i in range(len(d_path) - 1):
-                p1, p2 = d_path[i], d_path[i+1]
-                painter.drawLine(p1, p2)
-                if self.pixel_to_unit_ratio:
-                    p1_img, p2_img = self.current_path[i], self.current_path[i+1]
-                    d_m = (((p2_img.x()-p1_img.x())**2 + (p2_img.y()-p1_img.y())**2)**0.5) * self.pixel_to_unit_ratio
-                    painter.drawText(((p1+p2)/2).toPoint(), f"{d_m:.2f}m")
-            if self.temp_mouse_pos:
+                painter.drawLine(d_path[i], d_path[i+1])
+            
+            # Draw Dynamic Dragging Curve
+            if self.is_measuring_drag and self.current_curve_points and len(self.anchor_points) > 0:
+                d_curve = [p * self.zoom_level for p in self.current_curve_points]
+                if d_path:
+                    painter.drawLine(d_path[-1], d_curve[0])
+                for i in range(len(d_curve) - 1):
+                    painter.drawLine(d_curve[i], d_curve[i+1])
+                    
+            # Draw dashed line to mouse if not dragging
+            elif self.temp_mouse_pos and not self.is_measuring_drag and d_path:
                 painter.setPen(QPen(main_color, 2, Qt.DashLine))
                 painter.drawLine(d_path[-1], self.temp_mouse_pos * self.zoom_level)
+
+            # Draw Anchor Points (Main Clicks)
+            painter.setBrush(main_color)
+            painter.setPen(Qt.NoPen)
+            for pt in self.anchor_points:
+                painter.drawEllipse((pt * self.zoom_level).toPoint(), 4, 4)
+            if self.is_measuring_drag and self.drag_current_p2:
+                painter.drawEllipse((self.drag_current_p2 * self.zoom_level).toPoint(), 4, 4)
+
+            # Draw Labels for Anchors
+            if self.pixel_to_unit_ratio and len(self.anchor_points) >= 2:
+                painter.setPen(main_color)
+                for i in range(len(self.anchor_points) - 1):
+                    p1_img = self.anchor_points[i]
+                    p2_img = self.anchor_points[i+1]
+                    d_m = (((p2_img.x()-p1_img.x())**2 + (p2_img.y()-p1_img.y())**2)**0.5) * self.pixel_to_unit_ratio
+                    mid_img = (p1_img + p2_img) / 2
+                    painter.drawText((mid_img * self.zoom_level).toPoint(), f"{d_m:.2f}m")
 
         # Draw Manual Text
         if self.manual_text_labels:
@@ -352,7 +447,6 @@ class DocumentViewer(QWidget):
                  txt = item['text']
                  screen_pos = pos * self.zoom_level
                  
-                 # Draw background for better visibility
                  fm = painter.fontMetrics()
                  rect = fm.boundingRect(txt)
                  rect.moveCenter(screen_pos.toPoint())
@@ -369,12 +463,9 @@ class DocumentViewer(QWidget):
         self.label.setPixmap(display_pixmap)
 
     def get_manual_text_data(self):
-        """Returns manual text in a format compatible with OCR results."""
         results = []
         for item in self.manual_text_labels:
             pos = item['pos']
-            # Create a small dummy rect centered on the point
-            # [x1, y1, x2, y2]
             w, h = 10, 10
             rect = [pos.x() - w/2, pos.y() - h/2, pos.x() + w/2, pos.y() + h/2]
             results.append({
@@ -387,7 +478,7 @@ class DocumentViewer(QWidget):
         painter.setPen(QPen(color, 4))
         painter.setBrush(QColor(color.red(), color.green(), color.blue(), 80))
         
-        instance_counter = 1 # Keep track of which instance we are drawing
+        instance_counter = 1 
         
         for item in self.boq_data.get(data_key, []):
             if item.get("label") == target_label:
@@ -405,27 +496,21 @@ class DocumentViewer(QWidget):
                     
                     centroid = self.calculate_centroid(pts)
                     
-                    # Draw Instance Number
                     painter.setFont(QFont("Segoe UI", 16, QFont.Bold))
                     num_str = str(instance_counter)
                     
-                    # Draw a white outline behind the black text for maximum visibility
                     painter.setPen(QPen(Qt.white, 3))
                     painter.drawText(centroid.toPoint() + QPoint(1,1), num_str)
                     painter.setPen(QPen(Qt.black, 3))
                     painter.drawText(centroid.toPoint(), num_str)
                     
-                    # Existing Area Text
                     if self.pixel_to_unit_ratio and "area_pixels" in item:
                         area_px = item.get("area_pixels", 0)
                         real_area = area_px * (self.pixel_to_unit_ratio ** 2)
                         painter.setFont(QFont("Segoe UI", 11, QFont.Bold))
                         painter.setPen(Qt.black)
-                        
-                        # Shift the area text down so it doesn't overlap the big instance number
                         painter.drawText(centroid.toPoint() + QPoint(0, 20), f"{real_area:.2f} m²")
                         
-                    # Restore pen and color for the next shape in the loop
                     painter.setPen(QPen(color, 4))
                     
                 instance_counter += 1
@@ -449,10 +534,6 @@ class DocumentViewer(QWidget):
         self.update_view()
 
     def get_scaled_boq_data(self):
-        """
-        Returns a copy of the BOQ data with areas converted to real-world units
-        if calibration (pixel_to_unit_ratio) is set.
-        """
         if not self.boq_data:
             return {}
 
@@ -466,24 +547,17 @@ class DocumentViewer(QWidget):
             "pixel_to_unit_ratio": ratio if ratio is not None else 1.0
         }
         
-        # Helper to convert
         def convert_area(px_area):
             if ratio is None: return f"{px_area:.0f} px²"
             m2 = px_area * (ratio ** 2)
             return f"{m2:.2f} m²"
 
-        # Apply to Rooms
         for room in data.get('rooms', []):
             area_px = room.get('area_pixels', 0)
             room['area_readable'] = convert_area(area_px)
-            # Remove raw points to save token context window for LLM
-            #if 'points' in room: del room['points']
             if 'box_2d' in room: del room['box_2d']
 
-        # Apply to Icons (if they had area, but usually they are counts/points)
         for icon in data.get('icons', []):
-            # Icons usually point locations, but if we had dimensions we'd scale them
             if 'box_2d' in icon: del icon['box_2d']
-            #if 'points' in icon: del icon['points']
             
         return data
