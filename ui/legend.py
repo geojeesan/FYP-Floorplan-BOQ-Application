@@ -276,8 +276,9 @@ class LegendWidget(QWidget):
     def open_properties(self, label_name, item_type):
         main_win = self.window()
         viewer = None
-        if hasattr(main_win, 'tabs'):
-            viewer = main_win.tabs.currentWidget()
+        
+        if hasattr(main_win, 'current_widget'):
+            viewer = main_win.current_widget()
             
         if not isinstance(viewer, DocumentViewer):
             return
@@ -312,8 +313,8 @@ class LegendWidget(QWidget):
         btn.setStyleSheet(self._get_btn_style(is_active))
         main_win = self.window()
         viewer = None
-        if hasattr(main_win, 'tabs'):
-            viewer = main_win.tabs.currentWidget()
+        if hasattr(main_win, 'current_widget'):
+            viewer = main_win.current_widget()
         if isinstance(viewer, DocumentViewer):
             target = name if is_active else None
             if is_room:
