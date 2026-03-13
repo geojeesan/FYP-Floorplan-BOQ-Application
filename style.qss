@@ -145,3 +145,32 @@ QComboBox QAbstractItemView {
     selection-background-color: rgba(255, 255, 255, 30); /* Fluent style selection */
     outline: none; /* Removes the default dotted focus rectangle */
 }
+
+/* Dropdowns (ComboBox) */
+QComboBox {
+    background-color: rgba(255, 255, 255, 20); /* Solid dark gray to prevent transparency bugs */
+    border: 0px;
+    border-radius: 6px;
+    padding: 6px 12px;
+    color: #e5e5e5; /* Matches your global text color [cite: 2] */
+}
+
+QComboBox:hover {
+    background-color: rgba(255, 255, 255, 40); /* Slightly lighter on hover */
+}
+
+/* Removes the default harsh border around the arrow */
+QComboBox::drop-down {
+    border: none;
+    width: 24px;
+}
+
+/* The actual popup list */
+QComboBox QAbstractItemView {
+    background-color: #2b2b2b; /* Solid dark gray background */
+    color: #e5e5e5;
+    border: 1px solid rgba(255, 255, 255, 20);
+    border-radius: 6px;
+    selection-background-color: rgba(255, 255, 255, 30); /* Fluent style selection */
+    outline: none; /* Removes the default dotted focus rectangle */
+}

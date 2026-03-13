@@ -1,11 +1,55 @@
+import json
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QProgressBar
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QProgressBar,
+    QMessageBox, QInputDialog, QDialog, QFormLayout, QLineEdit, QComboBox,
+    QDialogButtonBox
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QPointF
+from PySide6.QtGui import QPainter, QPolygonF, QColor
 import qtawesome as qta
 import constants
 from .viewer import DocumentViewer
 from .material_assigner import MaterialAssignmentDialog
+
+
+class AddMeasurementDialog(QDialog):
+    """Custom dialog to ask for the name and type of a new measurement."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Save Measurement")
+        self.setMinimumWidth(300)
+        
+        self.layout = QVBoxLayout(self)
+        self.form_layout = QFormLayout()
+        
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("e.g., Bedroom, Closet, Window...")
+        
+        self.type_combo = QComboBox()
+        self.type_combo.addItems(["Room", "Item"])
+        
+        self.form_layout.addRow("Name:", self.name_input)
+        self.form_layout.addRow("Type:", self.type_combo)
+        self.layout.addLayout(self.form_layout)
+        
+        self.button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+        self.layout.addWidget(self.button_box)
+        
+    def get_data(self):
+        return self.name_input.text().strip(), self.type_combo.currentText() == "Item"
+
+
+class LegendButton(QPushButton):
+    """Custom button to emit a double click signal."""
+    doubleClicked = Signal()
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.doubleClicked.emit()
+        super().mouseDoubleClickEvent(event)
+
 
 class LegendWidget(QWidget):
     ocrRequested = Signal(bool) # Signal to Main Window: True=Show/Run, False=Hide
@@ -77,10 +121,18 @@ class LegendWidget(QWidget):
         # Initialize Visibility
         self.rooms_wrapper.setVisible(True)
         self.items_wrapper.setVisible(True)
-        
 
-        #self.layout.addWidget(QLabel("<b>Tools</b>"))
+        # Custom Tools Section Divider
+        self.layout.addSpacing(10)
         
+        # Save Measurement Button
+        self.btn_add_measurement = QPushButton("Save Last Measurement")
+        self.btn_add_measurement.setIcon(qta.icon('fa5s.draw-polygon', color='white'))
+        self.btn_add_measurement.setCursor(Qt.PointingHandCursor)
+        self.btn_add_measurement.setStyleSheet(self._get_action_btn_style())
+        self.btn_add_measurement.clicked.connect(self.on_add_measurement)
+        self.layout.addWidget(self.btn_add_measurement)
+
         # OCR Button
         self.btn_ocr = QPushButton("OCR Text Detection")
         self.btn_ocr.setCheckable(True)
@@ -107,6 +159,86 @@ class LegendWidget(QWidget):
         self.layout.addWidget(self.btn_toggle_ocr_labels)
         
         self.structure_container.setVisible(False)
+
+    def on_add_measurement(self):
+        main_win = self.window()
+        viewer = main_win.current_widget() if hasattr(main_win, 'current_widget') else None
+        
+        if not isinstance(viewer, DocumentViewer) or not viewer.boq_data:
+            QMessageBox.warning(self, "Error", "No active analysis data. Please analyze a floorplan first.")
+            return
+            
+        if not viewer.completed_shapes:
+            QMessageBox.information(self, "No Measurement", "Please use the Measure Tool to outline a closed area first.")
+            return
+            
+        dialog = AddMeasurementDialog(self)
+        if dialog.exec() == QDialog.Accepted:
+            name, is_item = dialog.get_data()
+            if not name:
+                QMessageBox.warning(self, "Error", "Name cannot be empty.")
+                return
+        else:
+            return
+            
+        # Take the most recently drawn shape
+        shape = viewer.completed_shapes[-1]
+        
+        target_list_key = 'icons' if is_item else 'rooms'
+        colors_list = self.icon_colors if is_item else self.room_colors
+        
+        class_id = -1
+        # Check if the name already exists in the selected category to inherit the ID
+        for item in viewer.boq_data.get(target_list_key, []):
+            if item.get('label') == name:
+                class_id = item.get('class_id', -1)
+                break
+                    
+        # If completely new name in this category, assign a new ID
+        if class_id == -1:
+            existing_ids = [r.get('class_id', 0) for r in viewer.boq_data.get(target_list_key, [])]
+            class_id = max(existing_ids) + 1 if existing_ids else 1
+            if class_id >= len(colors_list):
+                class_id = len(colors_list) - 1 # Cap it so it doesn't crash colors
+        
+        area_px = viewer.calculate_area_px(shape)
+        points_list = [[p.x(), p.y()] for p in shape]
+        
+        new_item = {
+            "class_id": class_id,
+            "label": name,
+            "area_pixels": area_px,
+            "points": points_list
+        }
+        
+        viewer.boq_data.setdefault(target_list_key, []).append(new_item)
+        
+        # Remove it from the temporary red measurement shapes
+        viewer.completed_shapes.pop()
+        
+        # Permanently embed it into the segmentation mask layer
+        target_pixmap = viewer.item_pixmap if is_item else viewer.room_pixmap
+        if target_pixmap and not target_pixmap.isNull():
+            painter = QPainter(target_pixmap)
+            c = colors_list[class_id % len(colors_list)]
+            # Draw with 140 Alpha so it matches CubiCasa's transparency
+            painter.setBrush(QColor(c[0], c[1], c[2], 140))
+            painter.setPen(Qt.NoPen)
+            poly = QPolygonF([QPointF(p[0], p[1]) for p in points_list])
+            painter.drawPolygon(poly)
+            painter.end()
+            
+        # Save to File
+        if viewer.json_data_path:
+            try:
+                with open(viewer.json_data_path, 'w') as f:
+                    json.dump(viewer.boq_data, f, indent=4)
+            except Exception as e:
+                print(f"Error saving JSON after adding measurement: {e}")
+                
+        # Force redraw and UI refresh
+        viewer.update_view()
+        self.refresh_legend(viewer.boq_data)
 
     def on_ocr_clicked(self):
         is_checked = self.btn_ocr.isChecked()
@@ -135,6 +267,22 @@ class LegendWidget(QWidget):
 
     def hide_progress(self):
         self.progress_bar.setVisible(False)
+        
+    def _get_action_btn_style(self):
+        return f"""
+            QPushButton {{
+                text-align: center; 
+                border: 1px solid rgba(251, 154, 68, 100); 
+                background-color: rgba(251, 154, 68, 60); 
+                padding: 6px;
+                color: white;
+                font-weight: bold;
+                border-radius: 4px;
+            }}
+            QPushButton:hover {{
+                background-color: rgba(251, 154, 68, 90);
+            }}
+        """
 
     def _get_ocr_btn_style(self, is_selected):
         bg = "rgba(0, 200, 255, 60)" if is_selected else "transparent"
@@ -166,9 +314,6 @@ class LegendWidget(QWidget):
         self._clear_layout(self.item_layout)
         self.buttons = {}
         
-        # Helper to process room/icon list
-        # We need to group by (label, class_id) to handle custom OCR labels
-        # structure: { "LabelName": class_id }
         present_rooms = {} 
         present_structures = {}
         present_icons = {}
@@ -178,9 +323,6 @@ class LegendWidget(QWidget):
         for item in boq_data.get('rooms', []):
             lbl = item.get('label', 'Unknown')
             cid = item.get('class_id', -1)
-            # Check if it's a structure based on the ORIGINAL class name if possible, 
-            # or check if the current label is a structure name.
-            # Best reliance is class_id
             
             original_class_name = constants.ROOM_CLASSES[cid] if 0 <= cid < len(constants.ROOM_CLASSES) else "Unknown"
             
@@ -189,7 +331,6 @@ class LegendWidget(QWidget):
             else:
                 present_rooms[lbl] = cid
 
-        # Ensure mandatory structures are present
         if "Wall" not in present_structures:
             present_structures["Wall"] = 2
         if "Railing" not in present_structures:
@@ -200,12 +341,10 @@ class LegendWidget(QWidget):
             cid = item.get('class_id', -1)
             present_icons[lbl] = cid
 
-        # Sort keys for consistent display
         room_labels = sorted(present_rooms.keys())
         struct_labels = sorted(present_structures.keys())
         icon_labels = sorted(present_icons.keys())
 
-        # Render
         self._add_dynamic_items(self.room_layout, room_labels, present_rooms, self.room_colors, is_room=True)
         self._add_dynamic_items(self.structure_layout, struct_labels, present_structures, self.room_colors, is_room=True, clickable=False)
         self._add_dynamic_items(self.item_layout, icon_labels, present_icons, self.icon_colors, is_room=False)
@@ -215,12 +354,6 @@ class LegendWidget(QWidget):
         self.lbl_structures.setVisible(has_structures)
 
     def _add_dynamic_items(self, layout, label_list, label_map, color_palette, is_room, clickable=True):
-        """
-        label_list: list of strings (names to show)
-        label_map: dict { name: class_id }
-        color_palette: list of colors
-        """
-        # Determine specific item type for the material assigner
         item_type = 'room'
         if not clickable: 
             item_type = 'structure'
@@ -232,7 +365,7 @@ class LegendWidget(QWidget):
             if 0 <= class_id < len(color_palette):
                 c = color_palette[class_id]
             else:
-                c = (100, 100, 100) # Gray fallback
+                c = (100, 100, 100)
 
             row = QWidget()
             row_layout = QHBoxLayout(row)
@@ -245,11 +378,12 @@ class LegendWidget(QWidget):
             row_layout.addWidget(color_lbl)
 
             if clickable:
-                btn = QPushButton(label_name)
+                btn = LegendButton(label_name)
                 btn.setCheckable(True) 
                 btn.setCursor(Qt.PointingHandCursor)
                 btn.setStyleSheet(self._get_btn_style(False))
                 btn.clicked.connect(lambda checked, b=btn, n=label_name, r=is_room: self.handle_click(b, n, r))
+                btn.doubleClicked.connect(lambda n=label_name, r=is_room: self.rename_label(n, r))
                 self.buttons[label_name] = btn
                 row_layout.addWidget(btn)
             else:
@@ -271,7 +405,152 @@ class LegendWidget(QWidget):
             btn_prop.clicked.connect(lambda checked, n=label_name, t=item_type: self.open_properties(n, t))
             row_layout.addWidget(btn_prop)
 
+            # Add Delete Button for all items that are not walls/railings (implied by clickable)
+            if clickable and label_name not in ["Wall", "Railing"]:
+                btn_del = QPushButton()
+                btn_del.setIcon(qta.icon('fa5s.trash-alt', color='#d9534f'))
+                btn_del.setFixedSize(24, 24)
+                btn_del.setCursor(Qt.PointingHandCursor)
+                btn_del.setToolTip(f"Delete all {label_name}s")
+                btn_del.setStyleSheet("""
+                    QPushButton { background: transparent; border: none; }
+                    QPushButton:hover { background: rgba(255, 0, 0, 30); border-radius: 4px; }
+                """)
+                btn_del.clicked.connect(lambda checked, n=label_name, r=is_room: self.delete_label_instances(n, r))
+                row_layout.addWidget(btn_del)
+
             layout.addWidget(row)
+
+    def rename_label(self, old_name, is_room):
+        main_win = self.window()
+        viewer = main_win.current_widget() if hasattr(main_win, 'current_widget') else None
+        
+        if not isinstance(viewer, DocumentViewer) or not viewer.boq_data:
+            return
+
+        new_name, ok = QInputDialog.getText(self, "Rename", f"Enter new name for '{old_name}':", text=old_name)
+        
+        if not ok or not new_name.strip() or new_name.strip() == old_name:
+            return
+            
+        new_name = new_name.strip()
+        data_key = 'rooms' if is_room else 'icons'
+        target_list = viewer.boq_data.get(data_key, [])
+
+        # Update JSON Objects
+        for item in target_list:
+            if item.get('label') == old_name:
+                item['label'] = new_name
+
+        # Save to File
+        if viewer.json_data_path:
+            try:
+                with open(viewer.json_data_path, 'w') as f:
+                    json.dump(viewer.boq_data, f, indent=4)
+            except Exception as e:
+                print(f"Error saving JSON after rename: {e}")
+
+        # Update Viewer Selection State if it was active
+        if is_room and viewer.selected_room_class == old_name:
+            viewer.selected_room_class = new_name
+        elif not is_room and viewer.selected_item_class == old_name:
+            viewer.selected_item_class = new_name
+
+        viewer.update_view()
+        self.refresh_legend(viewer.boq_data)
+
+    def delete_label_instances(self, label_name, is_room):
+        main_win = self.window()
+        viewer = main_win.current_widget() if hasattr(main_win, 'current_widget') else None
+        
+        if not isinstance(viewer, DocumentViewer) or not viewer.boq_data:
+            return
+
+        reply = QMessageBox.question(self, "Confirm Delete",
+                                     f"Are you sure you want to delete all instances of '{label_name}'?",
+                                     QMessageBox.Yes | QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+
+        data_key = 'rooms' if is_room else 'icons'
+        target_list = viewer.boq_data.get(data_key, [])
+
+        items_to_remove = [item for item in target_list if item.get('label') == label_name]
+
+        if not items_to_remove:
+            return
+
+        # Prepare for erasing the polygons off the segmentation mask
+        target_pixmap = viewer.room_pixmap if is_room else viewer.item_pixmap
+        painter = None
+        
+        if target_pixmap and not target_pixmap.isNull():
+            painter = QPainter(target_pixmap)
+            painter.setCompositionMode(QPainter.CompositionMode_Clear)
+            painter.setBrush(Qt.black)
+            painter.setPen(Qt.NoPen)
+
+        for item in items_to_remove:
+            target_list.remove(item)
+
+            if painter:
+                points = item.get('points', [])
+                qpts = []
+                for p in points:
+                    try:
+                        if isinstance(p, (list, tuple)) and len(p) >= 2:
+                            qpts.append(QPointF(float(p[0]), float(p[1])))
+                    except:
+                        pass
+                
+                if qpts:
+                    painter.drawPolygon(QPolygonF(qpts))
+                    
+        # --- NEW: Restore structural elements (Walls, Railings) ---
+        if painter and is_room:
+            painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+            for r in target_list:
+                if r.get('label') in ["Wall", "Railing"]:
+                    class_id = r.get('class_id', -1)
+                    if 0 <= class_id < len(self.room_colors):
+                        c = self.room_colors[class_id]
+                    else:
+                        c = (100, 100, 100)
+                    
+                    # 140 is the alpha used originally by CubiCasa overlay
+                    painter.setBrush(QColor(c[0], c[1], c[2], 140))
+                    painter.setPen(Qt.NoPen)
+                    
+                    pts = r.get('points', [])
+                    qpts = []
+                    for p in pts:
+                        try:
+                            if isinstance(p, (list, tuple)) and len(p) >= 2:
+                                qpts.append(QPointF(float(p[0]), float(p[1])))
+                        except:
+                            pass
+                    if qpts:
+                        painter.drawPolygon(QPolygonF(qpts))
+
+        if painter:
+            painter.end()
+
+        # Save JSON changes
+        if viewer.json_data_path:
+            try:
+                with open(viewer.json_data_path, 'w') as f:
+                    json.dump(viewer.boq_data, f, indent=4)
+            except Exception as e:
+                print(f"Error saving JSON after deletion: {e}")
+
+        # Clear viewer selection if we just deleted the active selection
+        if is_room and viewer.selected_room_class == label_name:
+            viewer.select_room_type(None)
+        elif not is_room and viewer.selected_item_class == label_name:
+            viewer.select_item_type(None)
+
+        viewer.update_view()
+        self.refresh_legend(viewer.boq_data)
 
     def open_properties(self, label_name, item_type):
         main_win = self.window()
@@ -285,6 +564,9 @@ class LegendWidget(QWidget):
             
         dialog = MaterialAssignmentDialog(label_name, item_type, viewer, self)
         dialog.exec()
+        
+        if viewer and viewer.boq_data:
+            self.refresh_legend(viewer.boq_data)
 
     def _get_btn_style(self, is_selected):
         bg = "rgba(255, 255, 255, 60)" if is_selected else "transparent"
@@ -325,17 +607,13 @@ class LegendWidget(QWidget):
                 viewer.select_room_type(None)
 
     def set_visibility(self, show_rooms, show_items):
-        # This acts as an external override or init
         self.rooms_wrapper.setVisible(show_rooms)
         self.items_wrapper.setVisible(show_items)
         
-        # Manage internal structure visibility
-        # If structures are empty, hide the subtitle too
         has_structures = self.structure_layout.count() > 0
         self.structure_container.setVisible(has_structures)
         self.lbl_structures.setVisible(has_structures)
         
-        # Sync buttons
         self.btn_toggle_rooms.setChecked(show_rooms)
         self.btn_toggle_items.setChecked(show_items)
         self.btn_toggle_rooms.setStyleSheet(self._get_btn_style(show_rooms))
