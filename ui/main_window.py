@@ -427,6 +427,14 @@ class PDFViewerApp(QMainWindow):
         # Controls Left Side
         self.controls = QWidget() 
         control_layout = QVBoxLayout(self.controls)
+
+        self.btn_toggle_thumbnails = QPushButton()
+        self.btn_toggle_thumbnails.setCheckable(True)
+        self.btn_toggle_thumbnails.setChecked(True)  # Visible by default for PDFs
+        self.btn_toggle_thumbnails.setIcon(qta.icon('fa5s.th-list'))
+        self.btn_toggle_thumbnails.setToolTip("Toggle Thumbnails")
+        self.btn_toggle_thumbnails.clicked.connect(self.toggle_thumbnails)
+        self.btn_toggle_thumbnails.hide()
         
         self.btn_measure = QPushButton()
         self.btn_measure.setIcon(qta.icon('fa5s.ruler-combined'))
@@ -460,6 +468,7 @@ class PDFViewerApp(QMainWindow):
         self.btn_db.clicked.connect(self.open_database_editor)
 
         control_layout.addSpacing(10)
+        control_layout.addWidget(self.btn_toggle_thumbnails)
         control_layout.addWidget(self.btn_measure)
         control_layout.addWidget(self.btn_mode_toggle)
         control_layout.addWidget(self.btn_text)
@@ -763,11 +772,13 @@ class PDFViewerApp(QMainWindow):
             self.right_sidebar.hide() 
             self.controls.hide()
 
-        if isinstance(viewer, DocumentViewer) and viewer.is_pdf_browser and viewer.thumbnail_widget:
+        if isinstance(viewer, DocumentViewer) and getattr(viewer, 'is_pdf_browser', False) and viewer.thumbnail_widget:
             self.thumbnail_scroll.setWidget(viewer.thumbnail_widget)
-            self.thumbnail_scroll.show()
+            self.btn_toggle_thumbnails.show()
+            self.thumbnail_scroll.setVisible(self.btn_toggle_thumbnails.isChecked())
         else:
             self.thumbnail_scroll.hide()
+            self.btn_toggle_thumbnails.hide()
 
         if isinstance(viewer, DocumentViewer):
             self.btn_measure.setEnabled(True)
@@ -848,6 +859,13 @@ class PDFViewerApp(QMainWindow):
             self.btn_analyse.hide()
             self.toggle_container.hide()
             self.chat_panel.set_active_viewer(None)
+
+    def toggle_thumbnails(self):
+        """Shows or hides the thumbnail scroll area based on the button's state."""
+        if self.btn_toggle_thumbnails.isChecked():
+            self.thumbnail_scroll.show()
+        else:
+            self.thumbnail_scroll.hide()
 
     def on_tab_changed(self, index):
         if index == -1: return

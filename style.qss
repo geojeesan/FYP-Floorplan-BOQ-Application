@@ -6,7 +6,6 @@
 /* Global Typography and Base Text */
 QWidget {
     font-family: "Segoe UI Variable", "Segoe UI", sans-serif;
-    font-size: 14px;
     color: #e5e5e5;
 }
 
@@ -19,12 +18,12 @@ QWidget {
     border-radius: 10px; /* Fluent rounded edges [cite: 13] */
 }
 
-QAbstractScrollArea::viewport, QTextEdit, QStackedWidget, QLabel, QWidget {
+QAbstractScrollArea::viewport, QStackedWidget, QWidget {
     background: transparent;
     border: none;
 }
 
-QScrollArea {
+QScrollArea, qt_scrollarea_viewport {
     background-color: rgba(255, 255, 255, 10); 
     border: 0px;
     border-radius: 12px;
@@ -32,10 +31,14 @@ QScrollArea {
 
 DocumentViewer,
 LegendWidget,
-AIChatPanel,
 QWidget#mainContainer,
 #recentFilesContainer {
     background-color: transparent;
+}
+
+DocumentViewer {
+    margin: none;
+    padding: none;
 }
 
 #thumbnailScrollArea {
@@ -82,7 +85,7 @@ QPushButton:pressed {
 
 /* Inputs & Forms */
 QLineEdit, QInputDialog {
-    background-color: rgba(0, 0, 0, 100);
+    background-color: rgba(255, 255, 255, 20);
     border: 1px solid rgba(255, 255, 255, 20);
     border-bottom: 2px solid rgba(255, 255, 255, 50); /* Fluent underline */
     border-radius: 4px;

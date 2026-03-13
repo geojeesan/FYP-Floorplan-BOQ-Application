@@ -236,11 +236,11 @@ class AIChatPanel(QWidget):
         
         self.send_btn = QPushButton("Ask")
         self.send_btn.clicked.connect(self.send_message)
-        self.send_btn.setStyleSheet("background-color: #0078d7; color: white; font-weight: bold;")
+        self.send_btn.setStyleSheet("background-color: #fb9a44; color: white; font-weight: bold;")
         
         self.clear_btn = QPushButton("Clear Chat")
         self.clear_btn.clicked.connect(self.clear_current_chat)
-        self.clear_btn.setStyleSheet("background-color: #f0f0f0; color: #333;")
+        self.clear_btn.setStyleSheet("background-color: rgba(255, 255, 255, 20); color: white;")
         
         btn_layout.addWidget(self.send_btn, stretch=3)
         btn_layout.addWidget(self.clear_btn, stretch=1)
