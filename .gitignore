@@ -1,0 +1,9 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+model_best_val_loss_var.pkl
+Difference in Room Annotation.pdf
+output_segmentation.png
+.env
+temp.sql

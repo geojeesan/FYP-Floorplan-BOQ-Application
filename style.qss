@@ -1,0 +1,310 @@
+/* Ensure the central widget doesn't block the Mica backdrop */
+#mainContainer {
+    background: transparent;
+}
+
+/* Global Typography and Base Text */
+QWidget {
+    font-family: "Segoe UI Variable", "Segoe UI", sans-serif;
+    color: #e5e5e5;
+}
+
+/* Fluent Panels & Scroll Areas */
+#thumbnailScrollArea, 
+#mainViewScrollArea, 
+#recentFilesScrollArea {
+    /* Replaces the hardcoded #3c3c3c with a semi-transparent dark layer [cite: 2, 12] */
+    background-color: rgba(255, 255, 255, 20); 
+    border-radius: 10px; /* Fluent rounded edges [cite: 13] */
+}
+
+QAbstractScrollArea::viewport, QStackedWidget, QWidget {
+    background: transparent;
+    border: none;
+}
+
+QScrollArea, qt_scrollarea_viewport {
+    background-color: rgba(255, 255, 255, 10); 
+    border: 0px;
+    border-radius: 12px;
+}
+
+DocumentViewer,
+LegendWidget,
+QWidget#mainContainer,
+#recentFilesContainer {
+    background-color: transparent;
+}
+
+DocumentViewer {
+    margin: none;
+    padding: none;
+}
+
+#thumbnailScrollArea {
+    background-color: rgba(20, 20, 20, 100); /* Slightly darker for the sidebar [cite: 1] */
+}
+
+/* Tab Widget Styling */
+QTabWidget::pane {
+    border: 0px solid rgba(255, 255, 255, 20);
+    border-radius: 8px;
+    background: transparent;
+}
+QTabBar::tab {
+    background: rgba(255, 255, 255, 20);
+    border: 0px solid rgba(255, 255, 255, 10);
+    border-bottom: none;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+    padding: 6px 16px;
+    margin-right: 2px;
+}
+QTabBar::tab:selected {
+    background: rgba(255, 255, 255, 30);
+    border: 0px solid rgba(255, 255, 255, 30);
+    border-bottom: 2px solid #fb9a44; /* Brand accent indicator */
+}
+QTabBar::tab:hover:!selected {
+    background: rgba(255, 255, 255, 30);
+}
+
+/* Standard Fluent Buttons */
+QPushButton {
+    background-color: rgba(255, 255, 255, 20);
+    border-radius: 6px;
+    padding: 12px 12px;
+}
+QPushButton:hover {
+    background-color: rgba(255, 255, 255, 30);
+}
+QPushButton:pressed {
+    background-color: rgba(255, 255, 255, 10);
+    color: rgba(255, 255, 255, 150);
+}
+
+/* Inputs & Forms */
+QLineEdit, QInputDialog {
+    background-color: rgba(255, 255, 255, 20);
+    border: 1px solid rgba(255, 255, 255, 20);
+    border-bottom: 2px solid rgba(255, 255, 255, 50); /* Fluent underline */
+    border-radius: 4px;
+    padding: 4px 8px;
+}
+QLineEdit:focus {
+    border-bottom: 2px solid #fb9a44; /* Focus state accent */
+}
+
+/* Scrollbars */
+QScrollBar:vertical, QScrollBar:horizontal {
+    background: transparent; /* Remove old solid backgrounds [cite: 4, 8, 14] */
+    width: 10px;
+    height: 10px;
+    margin: 0px;
+}
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
+    background-color: rgba(255, 255, 255, 40);
+    min-height: 25px;
+    min-width: 25px;
+    border-radius: 5px; /* Fully rounded pill shape [cite: 6, 10] */
+}
+QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
+    background-color: rgba(255, 255, 255, 80);
+}
+QScrollBar::add-line, QScrollBar::sub-line, 
+QScrollBar::add-page, QScrollBar::sub-page {
+    background: none;
+    border: none;
+}
+
+/* Dropdowns (ComboBox) */
+QComboBox {
+    background-color: rgba(255, 255, 255, 20); /* Solid dark gray to prevent transparency bugs */
+    border: 0px;
+    border-radius: 6px;
+    padding: 6px 12px;
+    color: #e5e5e5; /* Matches your global text color [cite: 2] */
+}
+
+QComboBox:hover {
+    background-color: rgba(255, 255, 255, 40); /* Slightly lighter on hover */
+}
+
+/* Removes the default harsh border around the arrow */
+QComboBox::down-arrow {
+    image: url("icons/chevron-down.svg");
+    width: 12px;
+    height: 12px;
+}
+
+QComboBox::down-arrow:on {
+    top: 1px;
+    left: 1px;
+}
+
+/* The actual popup list */
+QComboBox QAbstractItemView {
+    background-color: #2b2b2b; /* Solid dark gray background */
+    color: #e5e5e5;
+    border: 1px solid rgba(255, 255, 255, 20);
+    border-radius: 6px;
+    selection-background-color: rgba(255, 255, 255, 30); /* Fluent style selection */
+    outline: none; /* Removes the default dotted focus rectangle */
+}
+
+/* Dropdowns (ComboBox) */
+QComboBox {
+    background-color: rgba(255, 255, 255, 20); /* Solid dark gray to prevent transparency bugs */
+    border: 0px;
+    border-radius: 6px;
+    padding: 6px 12px;
+    color: #e5e5e5; /* Matches your global text color [cite: 2] */
+}
+
+QComboBox:hover {
+    background-color: rgba(255, 255, 255, 40); /* Slightly lighter on hover */
+}
+
+/* Removes the default harsh border around the arrow */
+QComboBox::drop-down {
+    border: none;
+    width: 24px;
+}
+
+/* The actual popup list */
+QComboBox QAbstractItemView {
+    background-color: #2b2b2b; /* Solid dark gray background */
+    color: #e5e5e5;
+    border: 1px solid rgba(255, 255, 255, 20);
+    border-radius: 6px;
+    selection-background-color: rgba(255, 255, 255, 30); /* Fluent style selection */
+    outline: none; /* Removes the default dotted focus rectangle */
+}
+
+QPushButton:checked {
+    background-color: rgba(255, 255, 255, 40);
+    color: #ffffff;
+}
+
+/* Main Table View */
+QTableView {
+    background-color: rgba(255, 255, 255, 10); /* Matches your scroll areas */
+    border: 1px solid rgba(255, 255, 255, 20);
+    border-radius: 10px;
+    gridline-color: rgba(255, 255, 255, 15); /* Subtle gridlines */
+    color: #e5e5e5;
+    outline: none; /* Removes the dotted focus ring around clicked cells */
+    selection-background-color: rgba(255, 255, 255, 30);
+    selection-color: #fb9a44; /* Uses your brand accent for selected text */
+}
+
+/* Individual Cells */
+QTableView::item {
+    padding: 8px;
+    border: none;
+}
+
+QTableView::item:focus {
+    background-color: rgba(255, 255, 255, 20); /* Slight highlight when tabbing through */
+}
+
+/* Table Headers (Top and Left) */
+QHeaderView {
+    background: transparent;
+    border: none;
+}
+
+QHeaderView::section {
+    background-color: rgba(255, 255, 255, 15);
+    color: #e5e5e5;
+    padding: 6px 12px;
+    font-weight: bold;
+    border: none;
+    border-right: 1px solid rgba(255, 255, 255, 15);
+    border-bottom: 1px solid rgba(255, 255, 255, 15);
+}
+
+/* Remove the right border from the last header column for a cleaner look */
+QHeaderView::section:horizontal:last {
+    border-right: none;
+}
+
+/* The top-left corner button where horizontal and vertical headers meet */
+QTableCornerButton::section {
+    background-color: rgba(255, 255, 255, 15);
+    border: none;
+    border-right: 1px solid rgba(255, 255, 255, 15);
+    border-bottom: 1px solid rgba(255, 255, 255, 15);
+}
+
+/* Checkboxes */
+QCheckBox {
+    color: #e5e5e5;
+    spacing: 8px; /* Space between the box and the text label */
+}
+
+QCheckBox::indicator {
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 40);
+    background-color: rgba(255, 255, 255, 10);
+}
+
+QCheckBox::indicator:hover {
+    background-color: rgba(255, 255, 255, 20);
+    border: 1px solid rgba(255, 255, 255, 60);
+}
+
+QCheckBox::indicator:checked {
+    background-color: #fb9a44; 
+    border: 1px solid #fb9a44;
+    image: url("icons/check.svg");
+}
+
+
+/* Number Inputs (SpinBoxes) */
+QSpinBox, QDoubleSpinBox {
+    background-color: rgba(255, 255, 255, 20);
+    border: 1px solid rgba(255, 255, 255, 20);
+    border-bottom: 2px solid rgba(255, 255, 255, 50); /* Fluent underline */
+    border-radius: 4px;
+    padding: 4px 8px;
+    color: #e5e5e5;
+    min-height: 24px;
+}
+
+QSpinBox:focus, QDoubleSpinBox:focus {
+    border-bottom: 2px solid #fb9a44; /* Focus state accent */
+}
+
+/* Up/Down Arrow Buttons Wrapper */
+QSpinBox::up-button, QDoubleSpinBox::up-button,
+QSpinBox::down-button, QDoubleSpinBox::down-button {
+    background-color: transparent;
+    border: none;
+    border-radius: 4px;
+    width: 24px;
+}
+
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
+    background-color: rgba(255, 255, 255, 20); /* Subtle highlight on hover */
+}
+
+QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed,
+QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed {
+    background-color: rgba(255, 255, 255, 10);
+}
+
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
+    image: url("icons/chevron-up.svg");
+    width: 10px;
+    height: 10px;
+}
+
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
+    image: url("icons/chevron-down.svg");
+    width: 10px;
+    height: 10px;
+}
