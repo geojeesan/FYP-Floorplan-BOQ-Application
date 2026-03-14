@@ -20,6 +20,7 @@ from PySide6.QtCore import Qt, Slot, QTimer
 from .viewer import DocumentViewer
 from .legend import LegendWidget
 from .chat import AIChatPanel
+from .export_panel import ExportPanel
 from .db_editor import DatabaseEditorDialog
 import database
 
@@ -38,8 +39,10 @@ class SettingsDialog(QDialog):
     """Popup Dialog to configure AI Providers, API Keys, and Models."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("AI Provider Settings")
+        self.setWindowTitle("Settings")
         self.setMinimumWidth(500)
+
+        PDFViewerApp.apply_mica(self)
         
         main_layout = QVBoxLayout(self)
         
@@ -378,33 +381,67 @@ class PDFViewerApp(QMainWindow):
         self.btn_analyse.clicked.connect(self.start_worker_on_current_tab)
         self.right_layout.addWidget(self.btn_analyse)
 
-        # 2. Toggle Buttons
+        # 2. Toggle Buttons (Chat, Legend, Export)
         self.toggle_container = QWidget()
         toggle_layout = QHBoxLayout(self.toggle_container)
         toggle_layout.setContentsMargins(0, 0, 0, 0)
         
-        self.btn_show_chat = QPushButton("Chat")
+        # Specific styling to explicitly show toggle states
+        toggle_style = """
+            QPushButton {
+                background-color: rgba(255, 255, 255, 10);
+                border: 1px solid transparent;
+                border-radius: 6px;
+                padding: 6px;
+                color: #dddddd;
+            }
+            QPushButton:hover { 
+                background-color: rgba(255, 255, 255, 20); 
+            }
+            QPushButton:checked {
+                background-color: rgba(255, 255, 255, 30);
+                border-bottom: 3px solid #fb9a44;
+                color: #ffffff;
+                font-weight: bold;
+            }
+        """
+        
+        self.btn_show_chat = QPushButton("ChatBot")
         self.btn_show_chat.setCheckable(True)
         self.btn_show_chat.setChecked(True)
+        self.btn_show_chat.setStyleSheet(toggle_style)
+        self.btn_show_chat.setCursor(Qt.PointingHandCursor)
         
-        self.btn_show_legend = QPushButton("Legend / Data")
+        self.btn_show_legend = QPushButton("Legend")
         self.btn_show_legend.setCheckable(True)
+        self.btn_show_legend.setStyleSheet(toggle_style)
+        self.btn_show_legend.setCursor(Qt.PointingHandCursor)
+        
+        self.btn_show_export = QPushButton("Export")
+        self.btn_show_export.setCheckable(True)
+        self.btn_show_export.setStyleSheet(toggle_style)
+        self.btn_show_export.setCursor(Qt.PointingHandCursor)
         
         self.view_group = QButtonGroup(self)
+        self.view_group.setExclusive(True)
         self.view_group.addButton(self.btn_show_chat)
         self.view_group.addButton(self.btn_show_legend)
+        self.view_group.addButton(self.btn_show_export)
         
         toggle_layout.addWidget(self.btn_show_chat)
         toggle_layout.addWidget(self.btn_show_legend)
+        toggle_layout.addWidget(self.btn_show_export)
         
         self.right_layout.addWidget(self.toggle_container)
         
         # 3. Stacked Widget
         self.right_stack = QStackedWidget()
         
+        # Index 0
         self.chat_panel = AIChatPanel()
         self.right_stack.addWidget(self.chat_panel)
         
+        # Index 1
         self.legend_scroll = QScrollArea()
         self.legend_scroll.setWidgetResizable(True)
         self.legend = LegendWidget()
@@ -413,14 +450,19 @@ class PDFViewerApp(QMainWindow):
         self.legend.ocrLabelsToggled.connect(self.on_toggle_ocr_labels)
         self.legend.roomsToggled.connect(self.on_toggle_rooms)
         self.legend.itemsToggled.connect(self.on_toggle_items)
-        
         self.legend_scroll.setWidget(self.legend)
         self.right_stack.addWidget(self.legend_scroll)
         
+        # Index 2
+        self.export_panel = ExportPanel(self)
+        self.right_stack.addWidget(self.export_panel)
+        
         self.right_layout.addWidget(self.right_stack)
         
+        # Connections
         self.btn_show_chat.clicked.connect(lambda: self.right_stack.setCurrentIndex(0))
         self.btn_show_legend.clicked.connect(lambda: self.right_stack.setCurrentIndex(1))
+        self.btn_show_export.clicked.connect(lambda: self.right_stack.setCurrentIndex(2))
 
         self.toggle_container.hide()
 
@@ -820,7 +862,11 @@ class PDFViewerApp(QMainWindow):
                 self.btn_analyse.show()
                 self.btn_analyse.setEnabled(True)
                 self.toggle_container.hide()
+                
+                # Default back to Legend when no analysis is present
                 self.right_stack.setCurrentIndex(1) 
+                self.btn_show_legend.setChecked(True)
+                
                 self.status_label.setText("Ready to Analyze")
                 self.btn_3d.setEnabled(False)
             

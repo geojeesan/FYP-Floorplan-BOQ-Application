@@ -204,7 +204,7 @@ class AIChatPanel(QWidget):
         
         # Header & Settings Layout
         header_layout = QHBoxLayout()
-        header_lbl = QLabel("<b>Floorplan Assistant</b>")
+        header_lbl = QLabel("<b>Model:</b>")
         
         # Provider & Model Selection
         self.provider_combo = QComboBox()

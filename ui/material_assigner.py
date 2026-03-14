@@ -6,8 +6,16 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtCore import Qt, QSize
+import os
+import ctypes
 
 DB_NAME = "boq_materials.db"
+
+class MARGINS(ctypes.Structure):
+    _fields_ = [("cxLeftWidth", ctypes.c_int),
+                ("cxRightWidth", ctypes.c_int),
+                ("cyTopHeight", ctypes.c_int),
+                ("cyBottomHeight", ctypes.c_int)]
 
 class MaterialAssignmentDialog(QDialog):
     def __init__(self, target_label, item_type, viewer, parent=None):
@@ -18,6 +26,8 @@ class MaterialAssignmentDialog(QDialog):
         
         self.setWindowTitle(f"Assign Materials: {target_label}")
         self.resize(500, 600)
+
+        self.apply_mica()
         
         self.layout = QVBoxLayout(self)
         
@@ -146,3 +156,23 @@ class MaterialAssignmentDialog(QDialog):
                 self.accept()
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save JSON:\n{e}")
+
+    def apply_mica(self):
+        if os.name == 'nt':
+            try:
+                hwnd = int(self.winId())
+                # Enable Dark Mode (20) & MicaAlt (38)
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, 20, ctypes.byref(ctypes.c_int(1)), ctypes.sizeof(ctypes.c_int)
+                )
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, 38, ctypes.byref(ctypes.c_int(2)), ctypes.sizeof(ctypes.c_int)
+                )
+                # Tell Windows to draw the Mica effect into our transparent window
+                margins = MARGINS(-1, -1, -1, -1)
+                ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
+                
+            except Exception as e:
+                print(f"Mica not supported on this OS version: {e}")
+
+            self.setStyleSheet("QMainWindow { background: transparent; }")

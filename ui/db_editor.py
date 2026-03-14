@@ -5,6 +5,14 @@ from PySide6.QtWidgets import (
 from PySide6.QtSql import QSqlDatabase, QSqlTableModel
 from PySide6.QtCore import Qt, QByteArray, QSize
 from PySide6.QtGui import QPixmap
+import os
+import ctypes
+
+class MARGINS(ctypes.Structure):
+    _fields_ = [("cxLeftWidth", ctypes.c_int),
+                ("cxRightWidth", ctypes.c_int),
+                ("cyTopHeight", ctypes.c_int),
+                ("cyBottomHeight", ctypes.c_int)]
 
 class ImageDelegate(QStyledItemDelegate):
     """Custom delegate to render BLOB data as image thumbnails."""
@@ -66,6 +74,8 @@ class DatabaseEditorDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Material Database Editor")
         self.resize(1000, 600)
+
+        self.apply_mica()
         
         self.db = QSqlDatabase.addDatabase("QSQLITE")
         self.db.setDatabaseName(db_path)
@@ -96,7 +106,7 @@ class DatabaseEditorDialog(QDialog):
         
         self.table_view = QTableView()
         self.table_view.setModel(self.model)
-        self.table_view.setAlternatingRowColors(True)
+        self.table_view.setAlternatingRowColors(False)
         self.table_view.verticalHeader().setDefaultSectionSize(100) 
         
         # Intercept double clicks for file selection
@@ -117,7 +127,7 @@ class DatabaseEditorDialog(QDialog):
         self.btn_revert.clicked.connect(self.model.revertAll)
         
         self.btn_submit = QPushButton("Save to Database")
-        self.btn_submit.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
+        self.btn_submit.setStyleSheet("background-color: #fb9a44; color: white; font-weight: bold;")
         self.btn_submit.clicked.connect(self.submit_changes)
         
         self.btn_layout.addWidget(self.btn_add)
@@ -172,3 +182,23 @@ class DatabaseEditorDialog(QDialog):
             QMessageBox.information(self, "Success", "Database updated successfully.")
         else:
             QMessageBox.warning(self, "Error", self.model.lastError().text())
+
+    def apply_mica(self):
+        if os.name == 'nt':
+            try:
+                hwnd = int(self.winId())
+                # Enable Dark Mode (20) & MicaAlt (38)
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, 20, ctypes.byref(ctypes.c_int(1)), ctypes.sizeof(ctypes.c_int)
+                )
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, 38, ctypes.byref(ctypes.c_int(2)), ctypes.sizeof(ctypes.c_int)
+                )
+                # Tell Windows to draw the Mica effect into our transparent window
+                margins = MARGINS(-1, -1, -1, -1)
+                ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
+                
+            except Exception as e:
+                print(f"Mica not supported on this OS version: {e}")
+
+            self.setStyleSheet("QMainWindow { background: transparent; }")

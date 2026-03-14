@@ -27,3 +27,4 @@ langchain-google-genai
 langchain-anthropic
 langchain-openrouter
 python-dotenv
+ezdxf

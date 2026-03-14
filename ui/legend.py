@@ -10,7 +10,14 @@ import qtawesome as qta
 import constants
 from .viewer import DocumentViewer
 from .material_assigner import MaterialAssignmentDialog
+import os
+import ctypes
 
+class MARGINS(ctypes.Structure):
+    _fields_ = [("cxLeftWidth", ctypes.c_int),
+                ("cxRightWidth", ctypes.c_int),
+                ("cyTopHeight", ctypes.c_int),
+                ("cyBottomHeight", ctypes.c_int)]
 
 class AddMeasurementDialog(QDialog):
     """Custom dialog to ask for the name and type of a new measurement."""
@@ -18,6 +25,8 @@ class AddMeasurementDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Save Measurement")
         self.setMinimumWidth(300)
+
+        self.apply_mica()
         
         self.layout = QVBoxLayout(self)
         self.form_layout = QFormLayout()
@@ -39,6 +48,26 @@ class AddMeasurementDialog(QDialog):
         
     def get_data(self):
         return self.name_input.text().strip(), self.type_combo.currentText() == "Item"
+    
+    def apply_mica(self):
+        if os.name == 'nt':
+            try:
+                hwnd = int(self.winId())
+                # Enable Dark Mode (20) & MicaAlt (38)
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, 20, ctypes.byref(ctypes.c_int(1)), ctypes.sizeof(ctypes.c_int)
+                )
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, 38, ctypes.byref(ctypes.c_int(2)), ctypes.sizeof(ctypes.c_int)
+                )
+                # Tell Windows to draw the Mica effect into our transparent window
+                margins = MARGINS(-1, -1, -1, -1)
+                ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
+                
+            except Exception as e:
+                print(f"Mica not supported on this OS version: {e}")
+
+            self.setStyleSheet("QMainWindow { background: transparent; }")
 
 
 class LegendButton(QPushButton):
