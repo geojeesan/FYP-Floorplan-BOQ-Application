@@ -3,6 +3,10 @@ import json
 import sqlite3
 from shapely.geometry import Polygon
 from dotenv import load_dotenv
+
+import langchain
+langchain.debug = True
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit, QLineEdit, QComboBox
 )
@@ -13,6 +17,7 @@ from PySide6.QtCore import QThread, Signal, Qt
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langchain_core.tools import tool
 from langchain.agents import create_agent
+from langchain_core.callbacks import StreamingStdOutCallbackHandler
 
 # Load environment variables (API Keys) from .env file
 load_dotenv()
@@ -91,18 +96,20 @@ def get_llm(provider: str, model_name: str):
     """Initializes the LLM based on the selected provider."""
     # Ensure variables are freshly loaded in case they were updated in Settings
     load_dotenv(override=True) 
+
+    stream_callback = [StreamingStdOutCallbackHandler()]
     
     if provider == "OpenAI":
         from langchain_openai import ChatOpenAI
-        return ChatOpenAI(model=model_name, temperature=0)
+        return ChatOpenAI(model=model_name, temperature=0, streaming=True, callbacks=stream_callback)
         
     elif provider == "Google":
         from langchain_google_genai import ChatGoogleGenerativeAI
-        return ChatGoogleGenerativeAI(model=model_name, temperature=0)
+        return ChatGoogleGenerativeAI(model=model_name, temperature=0, streaming=True, callbacks=stream_callback)
         
     elif provider == "Anthropic":
         from langchain_anthropic import ChatAnthropic
-        return ChatAnthropic(model=model_name, temperature=0)
+        return ChatAnthropic(model=model_name, temperature=0, streaming=True, callbacks=stream_callback)
         
     elif provider == "OpenRouter":
         from langchain_openai import ChatOpenAI
@@ -110,13 +117,17 @@ def get_llm(provider: str, model_name: str):
             openai_api_base="https://openrouter.ai/api/v1",
             openai_api_key=os.environ.get("OPENROUTER_API_KEY", ""),
             model_name=model_name,
-            temperature=0
+            temperature=0,
+            max_retries=1,
+            timeout=30,
+            streaming=True,
+            callbacks=stream_callback
         )
         
     else:
         # Default to Ollama
         from langchain_ollama import ChatOllama
-        return ChatOllama(model=model_name, temperature=0)
+        return ChatOllama(model=model_name, temperature=0, streaming=True, callbacks=stream_callback)
 
 
 class ChatWorker(QThread):

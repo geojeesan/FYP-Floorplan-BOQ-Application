@@ -1,10 +1,10 @@
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QComboBox, 
-    QPushButton, QTableView, QMessageBox, QLabel, QFileDialog, QStyledItemDelegate, QStyle
+    QPushButton, QTableView, QMessageBox, QLabel, QFileDialog, QStyledItemDelegate, QStyle, QMenu
 )
 from PySide6.QtSql import QSqlDatabase, QSqlTableModel
-from PySide6.QtCore import Qt, QByteArray, QSize
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QBuffer, Qt, QByteArray, QSize
+from PySide6.QtGui import QPixmap, QShortcut, QKeySequence, QGuiApplication
 import os
 import ctypes
 
@@ -111,6 +111,12 @@ class DatabaseEditorDialog(QDialog):
         
         # Intercept double clicks for file selection
         self.table_view.doubleClicked.connect(self.on_cell_double_clicked)
+
+        self.paste_shortcut = QShortcut(QKeySequence("Ctrl+V"), self.table_view)
+        self.paste_shortcut.activated.connect(self.on_shortcut_paste)
+
+        self.table_view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table_view.customContextMenuRequested.connect(self.show_context_menu)
         
         self.image_delegate = ImageDelegate(self)
         self.layout.addWidget(self.table_view)
@@ -167,7 +173,74 @@ class DatabaseEditorDialog(QDialog):
                     data = f.read()
                 # Insert the binary data into the model
                 self.model.setData(index, QByteArray(data), Qt.EditRole)
+
+    def on_shortcut_paste(self):
+        """Triggered by Ctrl+V"""
+        index = self.table_view.currentIndex()
+        self.execute_paste(index)
+
+    def show_context_menu(self, pos):
+        """Triggered by Right-Clicking the table"""
+        index = self.table_view.indexAt(pos)
+        if not index.isValid():
+            return
+
+        col_name = self.model.headerData(index.column(), Qt.Horizontal)
+        
+        # Only show the menu if we are in an image column
+        if col_name in ["image", "texture_for_3d"]:
+            menu = QMenu(self)
+            paste_action = menu.addAction("Paste Image")
+            
+            # Show menu at the cursor's global position
+            action = menu.exec(self.table_view.viewport().mapToGlobal(pos))
+            
+            if action == paste_action:
+                self.execute_paste(index)
+
+    def execute_paste(self, index):
+        """The core logic that grabs clipboard data and saves it to the DB"""
+        if not index.isValid():
+            return
+            
+        col_name = self.model.headerData(index.column(), Qt.Horizontal)
+        if col_name not in ["image", "texture_for_3d"]:
+            return
+
+        clipboard = QGuiApplication.clipboard()
+        mime_data = clipboard.mimeData()
+        buffer = QByteArray()
+
+        # CASE 1: The clipboard contains raw pixels (e.g., from Snipping Tool or web)
+        if mime_data.hasImage():
+            image = clipboard.image()
+            if not image.isNull():
+                buf = QBuffer(buffer)
+                buf.open(QBuffer.WriteOnly)
+                image.save(buf, "PNG")
                 
+        # CASE 2: The clipboard contains a copied file (e.g., from File Explorer)
+        elif mime_data.hasUrls():
+            for url in mime_data.urls():
+                if url.isLocalFile():
+                    file_path = url.toLocalFile()
+                    # Check if the copied file is actually an image
+                    if file_path.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+                        with open(file_path, "rb") as f:
+                            buffer = QByteArray(f.read())
+                        break # Just take the first valid image found
+
+        # Save to database if we successfully extracted an image
+        if not buffer.isEmpty():
+            # Pass the QByteArray DIRECTLY to avoid PySide/SQLite byte-conversion bugs
+            self.model.setData(index, buffer, Qt.EditRole)
+        else:
+            QMessageBox.information(
+                self, 
+                "Paste Failed", 
+                "Clipboard does not contain valid image pixels or a copied image file."
+            )
+
     def add_row(self):
         row = self.model.rowCount()
         self.model.insertRow(row)

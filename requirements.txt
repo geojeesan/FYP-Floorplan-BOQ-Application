@@ -28,3 +28,5 @@ langchain-anthropic
 langchain-openrouter
 python-dotenv
 ezdxf
+pandas
+openpyxl

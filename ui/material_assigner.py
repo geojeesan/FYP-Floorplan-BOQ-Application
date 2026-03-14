@@ -52,7 +52,7 @@ class MaterialAssignmentDialog(QDialog):
         # Buttons
         btn_layout = QHBoxLayout()
         btn_save = QPushButton("Save Assignments")
-        btn_save.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 6px;")
+        btn_save.setStyleSheet("background-color: #fb9a44; color: white; font-weight: bold;")
         btn_save.clicked.connect(self.save_assignments)
         
         btn_cancel = QPushButton("Cancel")
@@ -96,7 +96,7 @@ class MaterialAssignmentDialog(QDialog):
         # Build a group box for each instance found in the JSON
         for idx, inst in enumerate(self.instances):
             group = QGroupBox(f"{self.target_label} {idx + 1}")
-            group.setStyleSheet("QGroupBox { font-weight: bold; border: 1px solid #aaa; border-radius: 5px; margin-top: 10px; padding-top: 15px; }")
+            group.setStyleSheet("QGroupBox { font-weight: bold; background-color: rgba(255, 255, 255, 10); border-radius: 8px; margin-top: 10px; padding-top: 15px; }")
             form_layout = QFormLayout(group)
             
             self.combo_boxes[idx] = {}

@@ -536,13 +536,13 @@ class LegendWidget(QWidget):
             # Add Delete Button for all items that are not walls/railings (implied by clickable)
             if clickable and label_name not in ["Wall", "Railing"]:
                 btn_del = QPushButton()
-                btn_del.setIcon(qta.icon('fa5s.trash-alt', color='#d9534f'))
+                btn_del.setIcon(qta.icon('fa5s.trash-alt', color='#aaaaaa'))
                 btn_del.setFixedSize(24, 24)
                 btn_del.setCursor(Qt.PointingHandCursor)
                 btn_del.setToolTip(f"Delete all {label_name}s")
                 btn_del.setStyleSheet("""
                     QPushButton { background: transparent; border: none; }
-                    QPushButton:hover { background: rgba(255, 0, 0, 30); border-radius: 4px; }
+                    QPushButton:hover { color: #d9534f; background: rgba(255, 0, 0, 30); border-radius: 4px; }
                 """)
                 btn_del.clicked.connect(lambda checked, n=label_name, r=is_room: self.delete_label_instances(n, r))
                 row_layout.addWidget(btn_del)
