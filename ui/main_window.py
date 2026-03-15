@@ -74,7 +74,7 @@ class SettingsDialog(QDialog):
             # Container for the inner settings (API Key, Custom Models)
             settings_container = QWidget()
             form_layout = QFormLayout(settings_container)
-            form_layout.setContentsMargins(25, 0, 0, 15) # Indent underneath checkbox
+            form_layout.setContentsMargins(25, 0, 0, 15) 
             
             api_input = None
             if has_api_key:
@@ -87,7 +87,6 @@ class SettingsDialog(QDialog):
             models_input = None
             if has_models:
                 models_input = QLineEdit()
-                # Defaults
                 if prefix == "OLLAMA":
                     default_m = "phi4-mini, llama3, mistral, gemma"
                 else:
@@ -99,7 +98,6 @@ class SettingsDialog(QDialog):
                 
             scroll_layout.addWidget(settings_container)
             
-            # Tie the container visibility to the checkbox state
             chk_enable.toggled.connect(settings_container.setVisible)
             settings_container.setVisible(is_enabled)
             
@@ -123,18 +121,15 @@ class SettingsDialog(QDialog):
             open(env_file, 'w').close()
             
         for prefix, widgets in self.provider_data.items():
-            # Save Enabled State
             is_enabled = str(widgets["chk_enable"].isChecked())
             os.environ[f"{prefix}_ENABLED"] = is_enabled
             set_key(env_file, f"{prefix}_ENABLED", is_enabled)
             
-            # Save API Key
             if widgets["api_input"]:
                 api_val = widgets["api_input"].text().strip()
                 os.environ[f"{prefix}_API_KEY"] = api_val
                 set_key(env_file, f"{prefix}_API_KEY", api_val)
                 
-            # Save Custom Models
             if widgets["models_input"]:
                 model_val = widgets["models_input"].text().strip()
                 os.environ[f"{prefix}_MODELS"] = model_val
@@ -160,7 +155,6 @@ class StartScreenWidget(QWidget):
         start_layout.setAlignment(Qt.AlignCenter)
         start_layout.setSpacing(15)
         
-        # Logo and Open Button Container
         logo_button_container = QWidget()
         logo_button_layout = QHBoxLayout(logo_button_container)
         logo_button_layout.setContentsMargins(0, 0, 0, 0)
@@ -171,7 +165,6 @@ class StartScreenWidget(QWidget):
         button_recent_layout.setContentsMargins(0, 0, 0, 0)
         button_recent_layout.setSpacing(10)
         
-        # Logo
         self.logo_label = QLabel()
         logo_pixmap = QPixmap("resources/logo.png")
         if not logo_pixmap.isNull():
@@ -181,8 +174,7 @@ class StartScreenWidget(QWidget):
         
         logo_button_layout.addWidget(self.logo_label)
         
-        # Big Open Button
-        self.btn_big_open = QPushButton("Open PDF / Image")
+        self.btn_big_open = QPushButton("Open PDF / Image / Project")
         self.btn_big_open.setFixedSize(400, 60)
         self.btn_big_open.setStyleSheet("""
         QPushButton {
@@ -199,7 +191,6 @@ class StartScreenWidget(QWidget):
         self.btn_big_open.clicked.connect(self.main_app.open_file)
         button_recent_layout.addWidget(self.btn_big_open)
         
-        # Recent Files Section
         recent_label = QLabel("Recent Files")
         recent_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #eeeeee;")
         button_recent_layout.addWidget(recent_label, alignment=Qt.AlignCenter)
@@ -272,7 +263,7 @@ class PDFViewerApp(QMainWindow):
         self.resize(1400, 900)
         self.current_pdf_path = None
         self.temp_files = [] 
-        self.tab_widgets = [] # Maintains 1:1 mapping with the center_stack
+        self.tab_widgets = [] 
 
         self.apply_mica()
 
@@ -285,13 +276,12 @@ class PDFViewerApp(QMainWindow):
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.setSpacing(0)
 
-        # Top Bar Container (holds Tabs + Plus Button)
+        # Top Bar Container
         self.top_bar_widget = QWidget()
         self.top_bar_layout = QHBoxLayout(self.top_bar_widget)
         self.top_bar_layout.setContentsMargins(0, 0, 0, 0)
         self.top_bar_layout.setSpacing(2)
 
-        # Tab Bar (Always Visible at Top)
         self.tab_bar = QTabBar()
         self.tab_bar.setDrawBase(False)
         self.tab_bar.setStyleSheet("""
@@ -314,10 +304,9 @@ class PDFViewerApp(QMainWindow):
         """)
         self.tab_bar.currentChanged.connect(self.on_tab_changed)
         
-        # New Tab Button (Square)
         self.btn_new_tab = QPushButton()
         self.btn_new_tab.setIcon(qta.icon('fa5s.plus', color='#dddddd'))
-        self.btn_new_tab.setFixedSize(42, 42) # Matches general tab height
+        self.btn_new_tab.setFixedSize(42, 42)
         self.btn_new_tab.setCursor(Qt.PointingHandCursor)
         self.btn_new_tab.setStyleSheet("""
             QPushButton {
@@ -336,34 +325,28 @@ class PDFViewerApp(QMainWindow):
 
         self.top_bar_layout.addWidget(self.tab_bar)
         self.top_bar_layout.addWidget(self.btn_new_tab, alignment=Qt.AlignBottom)
-        self.top_bar_layout.addStretch() # Pushes tabs & button to the left
+        self.top_bar_layout.addStretch()
         
         self.main_layout.addWidget(self.top_bar_widget)
 
-        # Content Layout
         self.content_widget = QWidget()
         self.content_layout = QHBoxLayout(self.content_widget)
         self.content_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.addWidget(self.content_widget, 1)
 
-        # Sidebar (Initially Empty)
         self.thumbnail_scroll = QScrollArea()
         self.thumbnail_scroll.setWidgetResizable(True)
         self.thumbnail_scroll.setFixedWidth(150)
         
-        # Center Stack (holds DocumentViewers & StartScreens)
         self.center_stack = QStackedWidget()
 
-        # Initialize DB
         database.init_db()
 
-        # Right Sidebar Configuration
         self.right_sidebar = QWidget()
         self.right_sidebar.setFixedWidth(320)
         self.right_layout = QVBoxLayout(self.right_sidebar)
         self.right_layout.setContentsMargins(5, 5, 5, 5)
 
-        # 1. Analyse Button
         self.btn_analyse = QPushButton("Analyse")
         self.btn_analyse.setStyleSheet("""
             QPushButton {
@@ -381,12 +364,10 @@ class PDFViewerApp(QMainWindow):
         self.btn_analyse.clicked.connect(self.start_worker_on_current_tab)
         self.right_layout.addWidget(self.btn_analyse)
 
-        # 2. Toggle Buttons (Chat, Legend, Export)
         self.toggle_container = QWidget()
         toggle_layout = QHBoxLayout(self.toggle_container)
         toggle_layout.setContentsMargins(0, 0, 0, 0)
         
-        # Specific styling to explicitly show toggle states
         toggle_style = """
             QPushButton {
                 background-color: rgba(255, 255, 255, 10);
@@ -434,18 +415,15 @@ class PDFViewerApp(QMainWindow):
         
         self.right_layout.addWidget(self.toggle_container)
         
-        # 3. Stacked Widget
         self.right_stack = QStackedWidget()
         
-        # Index 0
         self.chat_panel = AIChatPanel()
         self.right_stack.addWidget(self.chat_panel)
         
-        # Index 1
         self.legend_scroll = QScrollArea()
         self.legend_scroll.setWidgetResizable(True)
         self.legend = LegendWidget()
-        # Connect the OCR Signals
+        
         self.legend.ocrRequested.connect(self.on_ocr_requested)
         self.legend.ocrLabelsToggled.connect(self.on_toggle_ocr_labels)
         self.legend.roomsToggled.connect(self.on_toggle_rooms)
@@ -453,13 +431,11 @@ class PDFViewerApp(QMainWindow):
         self.legend_scroll.setWidget(self.legend)
         self.right_stack.addWidget(self.legend_scroll)
         
-        # Index 2
         self.export_panel = ExportPanel(self)
         self.right_stack.addWidget(self.export_panel)
         
         self.right_layout.addWidget(self.right_stack)
         
-        # Connections
         self.btn_show_chat.clicked.connect(lambda: self.right_stack.setCurrentIndex(0))
         self.btn_show_legend.clicked.connect(lambda: self.right_stack.setCurrentIndex(1))
         self.btn_show_export.clicked.connect(lambda: self.right_stack.setCurrentIndex(2))
@@ -470,9 +446,15 @@ class PDFViewerApp(QMainWindow):
         self.controls = QWidget() 
         control_layout = QVBoxLayout(self.controls)
 
+        self.btn_save = QPushButton()
+        self.btn_save.setIcon(qta.icon('fa5s.save'))
+        self.btn_save.setToolTip("Save Project (.boq)")
+        self.btn_save.clicked.connect(self.save_project)
+        self.btn_save.setEnabled(False)
+
         self.btn_toggle_thumbnails = QPushButton()
         self.btn_toggle_thumbnails.setCheckable(True)
-        self.btn_toggle_thumbnails.setChecked(True)  # Visible by default for PDFs
+        self.btn_toggle_thumbnails.setChecked(True) 
         self.btn_toggle_thumbnails.setIcon(qta.icon('fa5s.th-list'))
         self.btn_toggle_thumbnails.setToolTip("Toggle Thumbnails")
         self.btn_toggle_thumbnails.clicked.connect(self.toggle_thumbnails)
@@ -510,6 +492,7 @@ class PDFViewerApp(QMainWindow):
         self.btn_db.clicked.connect(self.open_database_editor)
 
         control_layout.addSpacing(10)
+        control_layout.addWidget(self.btn_save)
         control_layout.addWidget(self.btn_toggle_thumbnails)
         control_layout.addWidget(self.btn_measure)
         control_layout.addWidget(self.btn_mode_toggle)
@@ -517,17 +500,14 @@ class PDFViewerApp(QMainWindow):
         control_layout.addWidget(self.btn_3d)
         control_layout.addWidget(self.btn_db)
         
-        # Pushes everything above to the top, allowing the settings button to rest at the bottom
         control_layout.addStretch()
 
-        # Add Settings Button at the bottom
         self.btn_settings = QPushButton()
         self.btn_settings.setIcon(qta.icon('fa5s.cog'))
         self.btn_settings.setToolTip("Settings / API Keys")
         self.btn_settings.clicked.connect(self.open_settings)
         control_layout.addWidget(self.btn_settings)
 
-        # Status Label - Moved to StatusBar
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: gray; font-style: italic;")
         self.statusBar().addWidget(self.status_label)
@@ -543,24 +523,20 @@ class PDFViewerApp(QMainWindow):
         self.right_sidebar.hide() 
         self.controls.hide()
 
-        # Create Initial Tab
         self.add_new_tab(StartScreenWidget(self), "New Tab")
 
     def apply_mica(self):
         if os.name == 'nt':
             try:
                 hwnd = int(self.winId())
-                # Enable Dark Mode (20) & MicaAlt (38)
                 ctypes.windll.dwmapi.DwmSetWindowAttribute(
                     hwnd, 20, ctypes.byref(ctypes.c_int(1)), ctypes.sizeof(ctypes.c_int)
                 )
                 ctypes.windll.dwmapi.DwmSetWindowAttribute(
                     hwnd, 38, ctypes.byref(ctypes.c_int(2)), ctypes.sizeof(ctypes.c_int)
                 )
-                # Tell Windows to draw the Mica effect into our transparent window
                 margins = MARGINS(-1, -1, -1, -1)
                 ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
-                
             except Exception as e:
                 print(f"Mica not supported on this OS version: {e}")
 
@@ -572,7 +548,6 @@ class PDFViewerApp(QMainWindow):
             self.chat_panel.refresh_providers()
 
     def current_widget(self):
-        """Helper to get current active widget based on TabBar index."""
         idx = self.tab_bar.currentIndex()
         if 0 <= idx < len(self.tab_widgets):
             return self.tab_widgets[idx]
@@ -590,10 +565,9 @@ class PDFViewerApp(QMainWindow):
         index = len(self.tab_widgets) - 1
         self.tab_bar.addTab(title)
         
-        # Wrapping the close button in a layout container to guarantee margins!
         close_container = QWidget()
         close_layout = QHBoxLayout(close_container)
-        close_layout.setContentsMargins(0, 0, 5, 0) # 5px right margin
+        close_layout.setContentsMargins(0, 0, 5, 0)
         close_layout.setSpacing(0)
         
         close_btn = QPushButton()
@@ -614,12 +588,10 @@ class PDFViewerApp(QMainWindow):
         return index
 
     def replace_or_add_tab(self, widget, title):
-        """Replaces current tab if it's a StartScreen, otherwise adds a new tab."""
         current_idx = self.tab_bar.currentIndex()
         if 0 <= current_idx < len(self.tab_widgets):
             current_widget = self.tab_widgets[current_idx]
             if isinstance(current_widget, StartScreenWidget):
-                # Replace logic
                 self.center_stack.removeWidget(current_widget)
                 current_widget.deleteLater()
                 
@@ -628,10 +600,8 @@ class PDFViewerApp(QMainWindow):
                 self.tab_bar.setTabText(current_idx, title)
                 self.center_stack.setCurrentIndex(current_idx)
                 
-                # Update close button reference 
                 close_container = self.tab_bar.tabButton(current_idx, QTabBar.RightSide)
                 if close_container:
-                    # Retrieve the actual button from the layout container
                     close_btn = close_container.layout().itemAt(0).widget()
                     close_btn.clicked.disconnect()
                     close_btn.clicked.connect(lambda _, w=widget: self.close_tab_by_widget(w))
@@ -654,14 +624,13 @@ class PDFViewerApp(QMainWindow):
         self.center_stack.removeWidget(widget)
         widget.deleteLater()
         
-        # If no tabs are left, spawn a new Start Screen
         if len(self.tab_widgets) == 0:
             self.add_new_tab(StartScreenWidget(self), "New Tab")
             
         self.update_toolbar_state()
 
     def open_file(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Open File", "", "PDF/Images (*.pdf *.png *.jpg)")
+        path, _ = QFileDialog.getOpenFileName(self, "Open File", "", "Supported Files (*.pdf *.png *.jpg *.boq)")
         if path:
             if path.lower().endswith('.pdf'): self.load_pdf(path)
             else: self.load_single_image(path)
@@ -724,7 +693,7 @@ class PDFViewerApp(QMainWindow):
                 painter.setRenderHint(QPainter.Antialiasing)
                 
                 clip_path = QPainterPath()
-                clip_path.addRoundedRect(0, 0, qpix.width(), qpix.height(), 8, 8) # 8px border radius
+                clip_path.addRoundedRect(0, 0, qpix.width(), qpix.height(), 8, 8) 
                 painter.setClipPath(clip_path)
                 painter.drawPixmap(0, 0, qpix)
                 painter.end()
@@ -734,11 +703,7 @@ class PDFViewerApp(QMainWindow):
                 btn.setText(f"Page {i+1}")
                 btn.setIcon(QIcon(rounded_pixmap))
                 btn.setIconSize(qpix.size())
-                
-                # Height is image height + roughly 25px for the text
                 btn.setFixedSize(qpix.width(), qpix.height() + 25) 
-                
-                # Enable the active/checked state
                 btn.setCheckable(True)
                 if i == viewer.current_page_num:
                     btn.setChecked(True)
@@ -757,7 +722,7 @@ class PDFViewerApp(QMainWindow):
                     }
                     QToolButton:checked {
                         background-color: rgba(255, 255, 255, 40);
-                        border: 3px solid #fb9a44; /* Brand accent border */
+                        border: 3px solid #fb9a44;
                         color: #ffffff;
                         font-weight: bold;
                     }
@@ -789,6 +754,23 @@ class PDFViewerApp(QMainWindow):
             self.update_toolbar_state()
         except Exception as e:
             print(f"Error navigating PDF: {e}")
+
+    def save_project(self):
+        viewer = self.current_widget()
+        if not isinstance(viewer, DocumentViewer) or not viewer.has_analysis_data:
+            return
+            
+        default_name = os.path.splitext(os.path.basename(viewer.file_path))[0] + ".boq"
+        path, _ = QFileDialog.getSaveFileName(self, "Save Project", default_name, "BOQ Project (*.boq)")
+        if path:
+            try:
+                viewer.save_to_boq(path)
+                database.add_recent_file(path)
+                self.refresh_all_start_screens()
+                self.status_label.setText(f"Project saved to {os.path.basename(path)}")
+                QMessageBox.information(self, "Success", f"Project successfully saved to:\n{path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save project:\n{e}")
 
     def update_toolbar_state(self):
         viewer = self.current_widget()
@@ -823,6 +805,7 @@ class PDFViewerApp(QMainWindow):
             self.btn_toggle_thumbnails.hide()
 
         if isinstance(viewer, DocumentViewer):
+            self.btn_save.setEnabled(viewer.has_analysis_data)
             self.btn_measure.setEnabled(True)
             self.btn_mode_toggle.setEnabled(True)
             self.btn_text.setEnabled(True)
@@ -842,15 +825,11 @@ class PDFViewerApp(QMainWindow):
 
             self.chat_panel.set_active_viewer(viewer)
 
-            if viewer.has_analysis_data and viewer.json_data_path:
-                import json
-                try:
-                    with open(viewer.json_data_path, 'r') as f:
-                        boq_data = json.load(f)
-                    self.legend.refresh_legend(boq_data)
+            if viewer.has_analysis_data:
+                if viewer.boq_data:
+                    self.legend.refresh_legend(viewer.boq_data)
                     self.legend.set_visibility(viewer.show_rooms, viewer.show_items)
-                except: pass 
-                
+                    
                 self.btn_analyse.hide()
                 self.toggle_container.show()
                 self.status_label.setText("Analysis Ready")
@@ -863,7 +842,6 @@ class PDFViewerApp(QMainWindow):
                 self.btn_analyse.setEnabled(True)
                 self.toggle_container.hide()
                 
-                # Default back to Legend when no analysis is present
                 self.right_stack.setCurrentIndex(1) 
                 self.btn_show_legend.setChecked(True)
                 
@@ -897,6 +875,7 @@ class PDFViewerApp(QMainWindow):
         else:
             self.legend.set_visibility(False, False)
             self.status_label.setText("")
+            self.btn_save.setEnabled(False)
             self.btn_measure.setEnabled(False)
             self.btn_mode_toggle.setEnabled(False)
             self.btn_text.setEnabled(False)
@@ -907,7 +886,6 @@ class PDFViewerApp(QMainWindow):
             self.chat_panel.set_active_viewer(None)
 
     def toggle_thumbnails(self):
-        """Shows or hides the thumbnail scroll area based on the button's state."""
         if self.btn_toggle_thumbnails.isChecked():
             self.thumbnail_scroll.show()
         else:
@@ -1093,7 +1071,6 @@ class PDFViewerApp(QMainWindow):
         viewer = self.current_widget()
         if not isinstance(viewer, DocumentViewer): return
         
-        # FIX: If it's a PDF browser, extract the current page into a new dedicated tab for analysis
         if getattr(viewer, 'is_pdf_browser', False):
             current_temp = viewer.file_path
             new_path = current_temp.replace(".png", f"_analysis_{random.randint(0,10000)}.png")
@@ -1104,7 +1081,7 @@ class PDFViewerApp(QMainWindow):
             page_name = f"Page {viewer.current_page_num + 1} Analysis"
             
             self.add_new_tab(new_viewer, page_name)
-            viewer = new_viewer # Update reference so the worker acts on the new standalone tab
+            viewer = new_viewer 
         
         self.btn_analyse.setEnabled(False)
         self.btn_analyse.setText("Analysing...")

@@ -138,7 +138,7 @@ class MaterialAssignmentDialog(QDialog):
         if not self.viewer or not self.viewer.boq_data:
             return
             
-        # Apply selections back to the specific instances
+        # 1. Apply selections back to the specific instances in memory
         for idx, item in enumerate(self.instances):
             new_materials = {}
             for category, combo in self.combo_boxes[idx].items():
@@ -147,15 +147,17 @@ class MaterialAssignmentDialog(QDialog):
                     new_materials[category] = data
             item['materials'] = new_materials
                 
-        # Save to JSON
-        if self.viewer.json_data_path:
+        # 2. Update temp JSON file ONLY if it exists (for fresh, unsaved analyses)
+        if getattr(self.viewer, 'json_data_path', None):
             try:
                 with open(self.viewer.json_data_path, 'w') as f:
                     json.dump(self.viewer.boq_data, f, indent=4)
-                QMessageBox.information(self, "Success", "Materials assigned and saved successfully.")
-                self.accept()
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to save JSON:\n{e}")
+                print(f"Non-critical error saving temp JSON:\n{e}")
+
+        # 3. Always succeed, close dialog, and remind user to save project
+        QMessageBox.information(self, "Success", "Materials assigned successfully.\n\nNote: Remember to click 'Save Project' in the main window to write these changes to your .boq file.")
+        self.accept()
 
     def apply_mica(self):
         if os.name == 'nt':

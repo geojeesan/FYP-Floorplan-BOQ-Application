@@ -11,6 +11,7 @@ import qtawesome as qta
 from shapely.geometry import Point, Polygon as ShapelyPolygon
 
 from .report_worker import ReportWorker
+from database import get_item_details
 
 try:
     import ezdxf
@@ -159,7 +160,7 @@ class ExportPanel(QWidget):
             area_px = item.get('area_pixels', 0)
             area_val = round(area_px * (ratio ** 2), 2)
             
-            # -> Append Room Header
+            # Append Room Header
             rows.append({
                 "Type": "Header", "Heading": unique_label, "Base_Description": "", "Category": "Space/Room",
                 "Unit": "sqm", "Length": l, "Width": w, "Height": default_height, "Quantity": area_val, 
@@ -170,26 +171,56 @@ class ExportPanel(QWidget):
             has_flooring = False
             has_wall = False
             
-            # -> Append Materials
+            # Append Materials
             for cat, mat_data in materials.items():
                 desc = mat_data.get('name', '')
-                rate = float(mat_data.get('cost', 0.0))
                 
+                db_record = get_item_details(desc)
+                if not db_record: db_record = {} 
+
+                brand = db_record.get('Brand_Name', '')
+                if brand and brand.lower() not in desc.lower():
+                    desc = f"{brand} {desc}"
+                
+                official_item_no = db_record.get('Item_No', f"EST-{item_counter:03d}")
+                raw_unit = db_record.get('Unit', mat_data.get('unit', 'sqm')).lower()
+                markup = float(db_record.get('Markup_Percentage', 0.0))
+                rate = float(db_record.get('Cost_per_Unit', mat_data.get('cost', 0.0)))
+                
+                # Paint Conversion
+                if raw_unit in ['litre', 'litres', 'l']:
+                    unit = 'litre'
+                    floor_qty = round(area_val / 5.0, 2)
+                    wall_qty = round((perimeter * default_height) / 5.0, 2)
+                else:
+                    unit = db_record.get('Unit', 'sqm')
+                    floor_qty = area_val
+                    wall_qty = round(perimeter * default_height, 2)
+
                 if "Floor" in cat or "floor" in cat.lower():
                     has_flooring = True
+
+                    total_amt = round(rate * floor_qty, 2)
+                    final_amt = round(total_amt + (total_amt * (markup / 100.0)), 2)
+
                     rows.append({
                         "Type": "Sub", "Heading": "", "Base_Description": desc, "Category": cat,
-                        "Unit": "sqm", "Length": l, "Width": w, "Height": "", "Quantity": area_val,
-                        "Rate": rate, "Total_Amount": round(rate * area_val, 2), "Item_No": f"{item_counter:03d}"
+                        "Unit": unit, "Length": l, "Width": w, "Height": "", "Quantity": floor_qty,
+                        "Rate": rate, "Total_Amount": total_amt, 
+                        "Markup_Percentage": markup, "Final_Amount": final_amt, "Item_No": official_item_no
                     })
                     item_counter += 1
                 elif "Wall" in cat or "wall" in cat.lower():
                     has_wall = True
-                    wall_area = round(perimeter * default_height, 2)
+
+                    total_amt = round(rate * wall_qty, 2)
+                    final_amt = round(total_amt + (total_amt * (markup / 100.0)), 2)
+
                     rows.append({
                         "Type": "Sub", "Heading": "", "Base_Description": desc, "Category": cat,
-                        "Unit": "sqm", "Length": perimeter, "Width": "", "Height": default_height, "Quantity": wall_area,
-                        "Rate": rate, "Total_Amount": round(rate * wall_area, 2), "Item_No": f"{item_counter:03d}"
+                        "Unit": unit, "Length": perimeter, "Width": "", "Height": default_height, "Quantity": wall_qty,
+                        "Rate": rate, "Total_Amount": total_amt, 
+                        "Markup_Percentage": markup, "Final_Amount": final_amt, "Item_No": official_item_no
                     })
                     item_counter += 1
 
@@ -210,7 +241,7 @@ class ExportPanel(QWidget):
                 })
                 item_counter += 1
 
-            # -> Append Icons falling inside this room
+            # Append Icons
             for icon_obj in unassigned_icons:
                 if not icon_obj["matched"] and len(icon_obj["pts"]) > 0:
                     pts = icon_obj["pts"]
@@ -224,20 +255,54 @@ class ExportPanel(QWidget):
                         icon_item = icon_obj["item"]
                         i_mats = icon_item.get('materials', {})
                         
+                        icon_width = ""
+                        if "door" in label.lower() or "window" in label.lower():
+                            xs = [p[0] for p in pts]
+                            ys = [p[1] for p in pts]
+                            w_m = (max(xs) - min(xs)) * ratio
+                            h_m = (max(ys) - min(ys)) * ratio
+                            icon_width = round(max(w_m, h_m), 2)
+                        
                         if i_mats:
                             for c, m in i_mats.items():
-                                rate = float(m.get('cost', 0.0))
+                                mat_name = m.get('name', '')
+                                desc = f"{label} - {mat_name}"
+                                db_record = get_item_details(mat_name) or get_item_details(label) or {}
+
+                                brand = db_record.get('Brand_Name', '')
+                                if brand and brand.lower() not in desc.lower():
+                                    desc = f"{brand} {desc}"
+                                
+                                official_item_no = db_record.get('Item_No', f"EST-{item_counter:03d}")
+                                unit = db_record.get('Unit', m.get('unit', 'ea'))
+                                markup = float(db_record.get('Markup_Percentage', 0.0))
+                                rate = float(db_record.get('Cost_per_Unit', m.get('cost', 0.0)))
+                                
+                                total_amt = round(rate * 1.0, 2)
+                                final_amt = round(total_amt + (total_amt * (markup / 100.0)), 2)
+                                
                                 rows.append({
-                                    "Type": "Sub", "Heading": "", "Base_Description": f"{label} - {m.get('name')}", "Category": c,
-                                    "Unit": "ea", "Length": "", "Width": "", "Height": "", "Quantity": 1.0,
-                                    "Rate": rate, "Total_Amount": rate, "Item_No": f"{item_counter:03d}"
+                                    "Type": "Sub", "Heading": "", "Base_Description": desc, "Category": c,
+                                    "Unit": unit, "Length": "", "Width": icon_width, "Height": "", "Quantity": 1.0,
+                                    "Rate": rate, "Total_Amount": total_amt, 
+                                    "Markup_Percentage": markup, "Final_Amount": final_amt, "Item_No": official_item_no
                                 })
                                 item_counter += 1
                         else:
+                            db_record = get_item_details(label) or {}
+                            official_item_no = db_record.get('Item_No', f"EST-{item_counter:03d}")
+                            unit = db_record.get('Unit', 'ea')
+                            markup = float(db_record.get('Markup_Percentage', 0.0))
+                            rate = float(db_record.get('Cost_per_Unit', 0.0))
+                            
+                            total_amt = round(rate * 1.0, 2)
+                            final_amt = round(total_amt + (total_amt * (markup / 100.0)), 2)
+
                             rows.append({
                                 "Type": "Sub", "Heading": "", "Base_Description": label, "Category": "Fixture/Item",
-                                "Unit": "ea", "Length": "", "Width": "", "Height": "", "Quantity": 1.0,
-                                "Rate": 0.0, "Total_Amount": 0.0, "Item_No": f"{item_counter:03d}"
+                                "Unit": unit, "Length": "", "Width": icon_width, "Height": "", "Quantity": 1.0,
+                                "Rate": rate, "Total_Amount": total_amt, 
+                                "Markup_Percentage": markup, "Final_Amount": final_amt, "Item_No": official_item_no
                             })
                             item_counter += 1
 

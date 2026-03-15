@@ -1,11 +1,12 @@
 import os
 import json
+import zipfile
 import numpy as np
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QScrollArea, QLabel, QInputDialog
 )
 from PySide6.QtGui import QPixmap, QPainter, QWheelEvent, QPen, QColor, QFont, QPolygonF
-from PySide6.QtCore import Qt, QPoint, QPointF, QEvent
+from PySide6.QtCore import Qt, QPoint, QPointF, QEvent, QByteArray, QBuffer, QIODevice
 import constants 
 
 class DocumentViewer(QWidget):
@@ -40,7 +41,7 @@ class DocumentViewer(QWidget):
         self.mode = "grab" 
         self.completed_shapes = [] 
         self.current_path = []  
-        self.anchor_points = [] # Tracks the actual structural clicks (anchors)
+        self.anchor_points = [] 
         
         # Drag & Curve State
         self.is_measuring_drag = False
@@ -69,11 +70,48 @@ class DocumentViewer(QWidget):
         self.scroll_area.setWidgetResizable(True)
         self.layout.addWidget(self.scroll_area)
         
-        self.load_base_image()
+        if self.file_path.lower().endswith('.boq'):
+            self.load_from_boq(self.file_path)
+        else:
+            self.load_base_image()
 
-    def update_image(self, file_path):
-        self.file_path = file_path
-        self.load_base_image()
+    def _pixmap_to_bytes(self, pixmap):
+        if not pixmap or pixmap.isNull(): return None
+        ba = QByteArray()
+        buffer = QBuffer(ba)
+        buffer.open(QIODevice.WriteOnly)
+        pixmap.save(buffer, "PNG")
+        return ba.data()
+
+    def save_to_boq(self, target_path):
+        """Saves all current state, image layers, and JSON data to a single .boq archive"""
+        with zipfile.ZipFile(target_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            orig_bytes = self._pixmap_to_bytes(self.original_pixmap)
+            if orig_bytes: zf.writestr("original.png", orig_bytes)
+            
+            room_bytes = self._pixmap_to_bytes(self.room_pixmap)
+            if room_bytes: zf.writestr("rooms.png", room_bytes)
+            
+            item_bytes = self._pixmap_to_bytes(self.item_pixmap)
+            if item_bytes: zf.writestr("items.png", item_bytes)
+            
+            ocr_bytes = self._pixmap_to_bytes(self.ocr_pixmap)
+            if ocr_bytes: zf.writestr("ocr.png", ocr_bytes)
+            
+            if self.boq_data:
+                zf.writestr("data.json", json.dumps(self.boq_data, indent=4))
+            
+            meta = {
+                "pixel_to_unit_ratio": self.pixel_to_unit_ratio,
+                "manual_text_labels": [{'pos': [t['pos'].x(), t['pos'].y()], 'text': t['text']} for t in self.manual_text_labels],
+                "completed_shapes": [[[p.x(), p.y()] for p in shape] for shape in self.completed_shapes],
+                "has_analysis_data": self.has_analysis_data,
+                "has_ocr_data": self.has_ocr_data
+            }
+            zf.writestr("meta.json", json.dumps(meta))
+
+    def load_from_boq(self, source_path):
+        """Restores the application state completely from a .boq archive"""
         self.room_pixmap = None
         self.item_pixmap = None
         self.ocr_pixmap = None
@@ -88,6 +126,72 @@ class DocumentViewer(QWidget):
         self.chat_log = [] 
         self.manual_text_labels = []
         self.clear_measurements()
+
+        with zipfile.ZipFile(source_path, 'r') as zf:
+            if "original.png" in zf.namelist():
+                pm = QPixmap()
+                pm.loadFromData(zf.read("original.png"))
+                self.original_pixmap = pm
+            
+            if "rooms.png" in zf.namelist():
+                pm = QPixmap()
+                pm.loadFromData(zf.read("rooms.png"))
+                self.room_pixmap = pm
+                
+            if "items.png" in zf.namelist():
+                pm = QPixmap()
+                pm.loadFromData(zf.read("items.png"))
+                self.item_pixmap = pm
+                
+            if "ocr.png" in zf.namelist():
+                pm = QPixmap()
+                pm.loadFromData(zf.read("ocr.png"))
+                self.ocr_pixmap = pm
+                
+            if "data.json" in zf.namelist():
+                self.boq_data = json.loads(zf.read("data.json").decode('utf-8'))
+                
+            if "meta.json" in zf.namelist():
+                meta = json.loads(zf.read("meta.json").decode('utf-8'))
+                self.pixel_to_unit_ratio = meta.get("pixel_to_unit_ratio")
+                self.has_analysis_data = meta.get("has_analysis_data", False)
+                self.has_ocr_data = meta.get("has_ocr_data", False)
+                
+                for t in meta.get("manual_text_labels", []):
+                    self.manual_text_labels.append({
+                        'pos': QPointF(t['pos'][0], t['pos'][1]),
+                        'text': t['text']
+                    })
+                    
+                for shape in meta.get("completed_shapes", []):
+                    self.completed_shapes.append([QPointF(p[0], p[1]) for p in shape])
+
+        self.show_rooms = self.has_analysis_data
+        self.show_items = self.has_analysis_data
+        self.show_ocr = self.has_ocr_data
+        self.json_data_path = None # State is completely managed in memory now
+        self.update_view()
+
+    def update_image(self, file_path):
+        self.file_path = file_path
+        if self.file_path.lower().endswith('.boq'):
+            self.load_from_boq(self.file_path)
+        else:
+            self.load_base_image()
+            self.room_pixmap = None
+            self.item_pixmap = None
+            self.ocr_pixmap = None
+            self.boq_data = None
+            self.has_analysis_data = False
+            self.has_ocr_data = False
+            self.show_rooms = False
+            self.show_items = False
+            self.show_ocr = False
+            self.selected_room_class = None
+            self.selected_item_class = None
+            self.chat_log = [] 
+            self.manual_text_labels = []
+            self.clear_measurements()
 
     def set_ocr_layer(self, layer_path):
         self.ocr_pixmap = QPixmap(layer_path)
@@ -240,18 +344,14 @@ class DocumentViewer(QWidget):
                 Vy = M.y() - P2.y()
                 
                 if (Vx**2 + Vy**2)**0.5 < 5 / self.zoom_level:
-                    # If drag distance is very small, maintain straight line
                     self.current_curve_points = [P2]
                 else:
-                    # Curve opposite to drag vector
                     Mid_x = (P1.x() + P2.x()) / 2
                     Mid_y = (P1.y() + P2.y()) / 2
                     
-                    # Offset control point from midpoint in opposite direction of drag
                     Cx = Mid_x - Vx * 1.5 
                     Cy = Mid_y - Vy * 1.5
                     
-                    # Discretize Bezier curve
                     pts = []
                     for i in range(1, 21):
                         t = i / 20.0
@@ -261,7 +361,6 @@ class DocumentViewer(QWidget):
                     self.current_curve_points = pts
                 self.update_view()
             else:
-                # Normal drawing dashed line to mouse
                 self.temp_mouse_pos = img_pos
                 if len(self.current_path) > 0:
                     self.update_view()
@@ -282,18 +381,15 @@ class DocumentViewer(QWidget):
             self.is_measuring_drag = False
             
             if self.is_closing_drag:
-                # Commit closure and save polygon
                 self.current_path.extend(self.current_curve_points)
                 self.completed_shapes.append(self.current_path)
                 self.current_path = []
                 self.anchor_points = []
             else:
                 if len(self.anchor_points) == 0:
-                    # First point
                     self.anchor_points.append(self.drag_current_p2)
                     self.current_path.append(self.drag_current_p2)
                 else:
-                    # Committing intermediate line/curve
                     self.anchor_points.append(self.drag_current_p2)
                     self.current_path.extend(self.current_curve_points)
                     
@@ -403,24 +499,19 @@ class DocumentViewer(QWidget):
             painter.setPen(QPen(main_color, 3))
             d_path = [p * self.zoom_level for p in self.current_path]
             
-            # Connect committed path points
             for i in range(len(d_path) - 1):
                 painter.drawLine(d_path[i], d_path[i+1])
             
-            # Draw Dynamic Dragging Curve
             if self.is_measuring_drag and self.current_curve_points and len(self.anchor_points) > 0:
                 d_curve = [p * self.zoom_level for p in self.current_curve_points]
                 if d_path:
                     painter.drawLine(d_path[-1], d_curve[0])
                 for i in range(len(d_curve) - 1):
                     painter.drawLine(d_curve[i], d_curve[i+1])
-                    
-            # Draw dashed line to mouse if not dragging
             elif self.temp_mouse_pos and not self.is_measuring_drag and d_path:
                 painter.setPen(QPen(main_color, 2, Qt.DashLine))
                 painter.drawLine(d_path[-1], self.temp_mouse_pos * self.zoom_level)
 
-            # Draw Anchor Points (Main Clicks)
             painter.setBrush(main_color)
             painter.setPen(Qt.NoPen)
             for pt in self.anchor_points:
@@ -428,7 +519,6 @@ class DocumentViewer(QWidget):
             if self.is_measuring_drag and self.drag_current_p2:
                 painter.drawEllipse((self.drag_current_p2 * self.zoom_level).toPoint(), 4, 4)
 
-            # Draw Labels for Anchors
             if self.pixel_to_unit_ratio and len(self.anchor_points) >= 2:
                 painter.setPen(main_color)
                 for i in range(len(self.anchor_points) - 1):

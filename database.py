@@ -68,6 +68,51 @@ def delete_recent_file(file_id):
     conn.commit()
     conn.close()
 
+def get_item_details(search_name):
+    """
+    Searches all material/fixture tables for an item by name and returns its details.
+    """
+    if not search_name:
+        return {}
+        
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    # The list of all your material/item tables
+    tables = [
+        "Floors", "Walls", "Doors", "Windows", "Fixtures", 
+        "Electrical Appliances", "Closet", "Toilet", "Sink", 
+        "Sauna Bench", "Fire Place", "Bathtub", "Chimney"
+    ]
+    
+    # Use LIKE for a flexible, case-insensitive search
+    search_pattern = f"%{search_name.strip()}%"
+    
+    for table in tables:
+        try:
+            cursor.execute(f'''
+                SELECT item_no, unit, markup_percentage, cost, brand_name 
+                FROM "{table}" 
+                WHERE item_name LIKE ? OR brand_name LIKE ?
+                LIMIT 1
+            ''', (search_pattern, search_pattern))
+            
+            row = cursor.fetchone()
+            if row:
+                conn.close()
+                return {
+                    'Item_No': row[0] if row[0] else "",
+                    'Unit': row[1] if row[1] else "",
+                    'Markup_Percentage': row[2] if row[2] else 0.0,
+                    'Cost_per_Unit': row[3] if row[3] else 0.0,
+                    'Brand_Name': row[4] if row[4] else ""  # NEW FIELD
+                }
+        except sqlite3.OperationalError:
+            continue
+            
+    conn.close()
+    return {}
+
 if __name__ == "__main__":
     init_db()
     print("Database initialized successfully.")
