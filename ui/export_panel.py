@@ -25,8 +25,10 @@ class ExportPanel(QWidget):
     def __init__(self, main_window=None):
         super().__init__()
         self.main_window = main_window
-        self.current_report_df = None
-        self.current_report_type = None
+        
+        # Keep separate DataFrames for QTO and BOQ
+        self.qto_df = None
+        self.boq_df = None
         
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignTop)
@@ -37,71 +39,124 @@ class ExportPanel(QWidget):
         header_lbl.setStyleSheet("font-size: 16px; margin-bottom: 5px;")
         layout.addWidget(header_lbl)
         
-        self.btn_qto = QPushButton(" Generate Quantity Take-off")
-        self.btn_qto.setIcon(qta.icon('fa5s.file-excel', color='white'))
-        
-        self.btn_boq = QPushButton(" Generate BOQ")
-        self.btn_boq.setIcon(qta.icon('fa5s.file-invoice-dollar', color='white'))
-        
-        self.btn_cad = QPushButton(" Export to CAD (.dxf)")
-        self.btn_cad.setIcon(qta.icon('fa5s.drafting-compass', color='white'))
-        
         btn_style = """
             QPushButton {
-                background-color: #4CAF50; color: white; font-size: 14px; 
+                background-color: #fb9a44; color: white; font-size: 14px; 
                 padding: 12px; border-radius: 6px; font-weight: bold;
                 text-align: left; padding-left: 15px;
             }
-            QPushButton:hover { background-color: #45a049; }
-            QPushButton:disabled { background-color: #555555; color: #888888; }
+            QPushButton:hover { background-color: #e08c3a; }
+            QPushButton:disabled { background-color: #555555; color: #666666; }
         """
         cad_style = """
             QPushButton {
-                background-color: #2196F3; color: white; font-size: 14px; 
-                padding: 12px; border-radius: 6px; font-weight: bold;
-                text-align: left; padding-left: 15px;
+                text-align: left; font-size: 14px;
+                padding: 12px; padding-left: 15px;
+                color: white;
+                font-weight: bold;
+                border-radius: 6px;
             }
-            QPushButton:hover { background-color: #1e88e5; }
         """
+        dl_csv_style = """
+            QPushButton {
+                text-align: center; 
+                border: 1px solid rgba(96, 125, 139, 90); 
+                padding: 6px;
+                color: white;
+                font-weight: bold;
+                border-radius: 4px;
+                margin-bottom: 25px;
+            }
+            QPushButton:hover { background-color: rgba(96, 125, 139, 90); }
+        """
+
+        dl_xl_style = """
+            QPushButton {
+                text-align: center; 
+                border: 1px solid rgba(28, 136, 80, 90); 
+                padding: 6px;
+                color: white;
+                font-weight: bold;
+                border-radius: 4px;
+                margin-bottom: 25px;
+            }
+            QPushButton:hover { background-color: rgba(28, 136, 80, 90); }
+        """
+
+        # QTO Section
+        self.btn_qto = QPushButton(" Generate Quantity Take-off")
+        self.btn_qto.setIcon(qta.icon('fa5s.file-excel', color='white'))
         self.btn_qto.setStyleSheet(btn_style)
-        self.btn_boq.setStyleSheet(btn_style)
-        self.btn_cad.setStyleSheet(cad_style)
-        
         self.btn_qto.clicked.connect(lambda: self.start_hybrid_generation("Quantity Take-off (Measurement Sheet)"))
+        
+        self.qto_downloads_layout = QHBoxLayout()
+        self.btn_qto_csv = QPushButton(" Download CSV")
+        self.btn_qto_csv.setIcon(qta.icon('fa5s.file-csv', color='white'))
+        self.btn_qto_csv.setStyleSheet(dl_csv_style)
+        self.btn_qto_csv.clicked.connect(lambda: self.download_csv("QTO"))
+        self.btn_qto_csv.hide()
+        
+        self.btn_qto_excel = QPushButton(" Download Excel")
+        self.btn_qto_excel.setIcon(qta.icon('fa5s.file-excel', color='white'))
+        self.btn_qto_excel.setStyleSheet(dl_xl_style)
+        self.btn_qto_excel.clicked.connect(lambda: self.download_excel("QTO"))
+        self.btn_qto_excel.hide()
+        
+        self.qto_downloads_layout.addWidget(self.btn_qto_csv)
+        self.qto_downloads_layout.addWidget(self.btn_qto_excel)
+
+        # BOQ Section
+        self.btn_boq = QPushButton(" Generate BOQ")
+        self.btn_boq.setIcon(qta.icon('fa5s.file-invoice-dollar', color='white'))
+        self.btn_boq.setStyleSheet(btn_style)
         self.btn_boq.clicked.connect(lambda: self.start_hybrid_generation("Bill of Quantities (BOQ)"))
+        
+        self.boq_downloads_layout = QHBoxLayout()
+        self.btn_boq_csv = QPushButton(" Download CSV")
+        self.btn_boq_csv.setIcon(qta.icon('fa5s.file-csv', color='white'))
+        self.btn_boq_csv.setStyleSheet(dl_csv_style)
+        self.btn_boq_csv.clicked.connect(lambda: self.download_csv("BOQ"))
+        self.btn_boq_csv.hide()
+        
+        self.btn_boq_excel = QPushButton(" Download Excel")
+        self.btn_boq_excel.setIcon(qta.icon('fa5s.file-excel', color='white'))
+        self.btn_boq_excel.setStyleSheet(dl_xl_style)
+        self.btn_boq_excel.clicked.connect(lambda: self.download_excel("BOQ"))
+        self.btn_boq_excel.hide()
+        
+        self.boq_downloads_layout.addWidget(self.btn_boq_csv)
+        self.boq_downloads_layout.addWidget(self.btn_boq_excel)
+
+        # CAD Section
+        self.btn_cad = QPushButton(" Export to CAD (.dxf)")
+        self.btn_cad.setIcon(qta.icon('fa5s.drafting-compass', color='white'))
+        self.btn_cad.setStyleSheet(cad_style)
         self.btn_cad.clicked.connect(self.export_cad)
-        
+
+        # Add everything to main layout
         layout.addWidget(self.btn_qto)
-        layout.addWidget(self.btn_boq)
-        layout.addWidget(self.btn_cad)
+        layout.addLayout(self.qto_downloads_layout)
         
+        layout.addWidget(self.btn_boq)
+        layout.addLayout(self.boq_downloads_layout)
+        
+        layout.addWidget(self.btn_cad)
         layout.addSpacing(20)
         
+        # Progress UI
+        self.progress_label = QLabel("")
+        self.progress_label.setStyleSheet("color: #666; font-style: italic; font-size: 12px;")
+        self.progress_label.setAlignment(Qt.AlignCenter)
+        self.progress_label.hide()
+        layout.addWidget(self.progress_label)
+
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 0)
         self.progress_bar.setFixedHeight(8)
         self.progress_bar.setTextVisible(False)
         self.progress_bar.hide()
         layout.addWidget(self.progress_bar)
-        
-        self.download_layout = QHBoxLayout()
-        
-        self.btn_csv = QPushButton(" Download CSV")
-        self.btn_csv.setIcon(qta.icon('fa5s.file-csv', color='white'))
-        self.btn_csv.setStyleSheet("background-color: #607D8B; color: white; padding: 10px; border-radius: 4px; font-weight: bold;")
-        self.btn_csv.clicked.connect(self.download_csv)
-        self.btn_csv.hide()
-        
-        self.btn_excel = QPushButton(" Download Excel")
-        self.btn_excel.setIcon(qta.icon('fa5s.file-excel', color='white'))
-        self.btn_excel.setStyleSheet("background-color: #009688; color: white; padding: 10px; border-radius: 4px; font-weight: bold;")
-        self.btn_excel.clicked.connect(self.download_excel)
-        self.btn_excel.hide()
-        
-        self.download_layout.addWidget(self.btn_csv)
-        self.download_layout.addWidget(self.btn_excel)
-        
-        layout.addLayout(self.download_layout)
+
         layout.addStretch()
 
     def _prepare_hierarchical_data(self, viewer):
@@ -199,7 +254,6 @@ class ExportPanel(QWidget):
 
                 if "Floor" in cat or "floor" in cat.lower():
                     has_flooring = True
-
                     total_amt = round(rate * floor_qty, 2)
                     final_amt = round(total_amt + (total_amt * (markup / 100.0)), 2)
 
@@ -212,7 +266,6 @@ class ExportPanel(QWidget):
                     item_counter += 1
                 elif "Wall" in cat or "wall" in cat.lower():
                     has_wall = True
-
                     total_amt = round(rate * wall_qty, 2)
                     final_amt = round(total_amt + (total_amt * (markup / 100.0)), 2)
 
@@ -228,7 +281,7 @@ class ExportPanel(QWidget):
                 rows.append({
                     "Type": "Sub", "Heading": "", "Base_Description": "Flooring Finish", "Category": "Flooring",
                     "Unit": "sqm", "Length": l, "Width": w, "Height": "", "Quantity": area_val,
-                    "Rate": 0.0, "Total_Amount": 0.0, "Item_No": f"{item_counter:03d}"
+                    "Rate": 0.0, "Total_Amount": 0.0, "Item_No": f"EST-{item_counter:03d}"
                 })
                 item_counter += 1
                 
@@ -237,7 +290,7 @@ class ExportPanel(QWidget):
                 rows.append({
                     "Type": "Sub", "Heading": "", "Base_Description": "Wall Finish", "Category": "Wall Finish",
                     "Unit": "sqm", "Length": perimeter, "Width": "", "Height": default_height, "Quantity": wall_area,
-                    "Rate": 0.0, "Total_Amount": 0.0, "Item_No": f"{item_counter:03d}"
+                    "Rate": 0.0, "Total_Amount": 0.0, "Item_No": f"EST-{item_counter:03d}"
                 })
                 item_counter += 1
 
@@ -289,14 +342,14 @@ class ExportPanel(QWidget):
                                 })
                                 item_counter += 1
                         else:
-                            db_record = get_item_details(label) or {}
-                            official_item_no = db_record.get('Item_No', f"EST-{item_counter:03d}")
-                            unit = db_record.get('Unit', 'ea')
-                            markup = float(db_record.get('Markup_Percentage', 0.0))
-                            rate = float(db_record.get('Cost_per_Unit', 0.0))
+                            # Force unassigned items to 0.0 so the AI Estimator catches them
+                            official_item_no = f"EST-{item_counter:03d}"
+                            unit = 'ea'
+                            markup = 0.0
+                            rate = 0.0
                             
-                            total_amt = round(rate * 1.0, 2)
-                            final_amt = round(total_amt + (total_amt * (markup / 100.0)), 2)
+                            total_amt = 0.0
+                            final_amt = 0.0
 
                             rows.append({
                                 "Type": "Sub", "Heading": "", "Base_Description": label, "Category": "Fixture/Item",
@@ -315,10 +368,10 @@ class ExportPanel(QWidget):
             QMessageBox.warning(self, "Export Error", "No active analysis data to export.")
             return
             
-        self.btn_csv.hide()
-        self.btn_excel.hide()
         self.btn_qto.setEnabled(False)
         self.btn_boq.setEnabled(False)
+        self.progress_label.setText("Starting process...")
+        self.progress_label.show()
         self.progress_bar.show()
         
         provider = self.main_window.chat_panel.provider_combo.currentText()
@@ -327,52 +380,66 @@ class ExportPanel(QWidget):
         exact_math_list = self._prepare_hierarchical_data(viewer)
             
         self.worker = ReportWorker(exact_math_list, report_type, provider, model)
+        self.worker.progress.connect(self.update_progress)
         self.worker.finished.connect(self.on_report_finished)
         self.worker.error.connect(self.on_report_error)
         self.worker.start()
 
+    def update_progress(self, msg):
+        self.progress_label.setText(msg)
+
     def on_report_finished(self, json_str, report_type):
         self.progress_bar.hide()
+        self.progress_label.hide()
         self.btn_qto.setEnabled(True)
         self.btn_boq.setEnabled(True)
         
         try:
             data = json.loads(json_str)
-            self.current_report_df = pd.DataFrame(data)
-            self.current_report_type = "QTO" if "Take-off" in report_type else "BOQ"
+            df = pd.DataFrame(data)
             
-            self.btn_csv.show()
-            self.btn_excel.show()
-            QMessageBox.information(self, "Success", f"{report_type} generated successfully via AI!\n\nPlease choose a download format below.")
+            if "Take-off" in report_type:
+                self.qto_df = df
+                self.btn_qto_csv.show()
+                self.btn_qto_excel.show()
+            else:
+                self.boq_df = df
+                self.btn_boq_csv.show()
+                self.btn_boq_excel.show()
+                
+            QMessageBox.information(self, "Success", f"{report_type} generated successfully!\n\nPlease choose a download format")
             
         except Exception as e:
             QMessageBox.critical(self, "AI Formatting Error", f"The AI failed to format the report properly as JSON.\nError: {e}\n\nRaw Output:\n{json_str[:500]}...")
 
     def on_report_error(self, err_msg):
         self.progress_bar.hide()
+        self.progress_label.hide()
         self.btn_qto.setEnabled(True)
         self.btn_boq.setEnabled(True)
         QMessageBox.critical(self, "Generation Error", f"An error occurred during report generation:\n{err_msg}")
 
-    def download_csv(self):
-        if self.current_report_df is None: return
-        file_path, _ = QFileDialog.getSaveFileName(self, "Save CSV", f"{self.current_report_type}_Report.csv", "CSV Files (*.csv)")
+    def download_csv(self, target_type):
+        df = self.qto_df if target_type == "QTO" else self.boq_df
+        if df is None: return
+        
+        file_path, _ = QFileDialog.getSaveFileName(self, "Save CSV", f"{target_type}_Report.csv", "CSV Files (*.csv)")
         if file_path:
             try:
-                self.current_report_df.to_csv(file_path, index=False)
-                QMessageBox.information(self, "Saved", "CSV File saved successfully!")
+                df.to_csv(file_path, index=False)
+                QMessageBox.information(self, "Saved", f"{target_type} CSV File saved successfully!")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save CSV:\n{str(e)}")
 
-    def download_excel(self):
-        if self.current_report_df is None: return
-        file_path, _ = QFileDialog.getSaveFileName(self, "Save Excel", f"{self.current_report_type}_Report.xlsx", "Excel Files (*.xlsx)")
+    def download_excel(self, target_type):
+        df = self.qto_df if target_type == "QTO" else self.boq_df
+        if df is None: return
+        
+        file_path, _ = QFileDialog.getSaveFileName(self, "Save Excel", f"{target_type}_Report.xlsx", "Excel Files (*.xlsx)")
         if file_path:
             try:
-                # 1. Save standard Pandas dataframe
-                self.current_report_df.to_excel(file_path, index=False)
+                df.to_excel(file_path, index=False)
                 
-                # 2. Apply advanced formatting with OpenPyXL
                 try:
                     from openpyxl import load_workbook
                     from openpyxl.styles import Font
@@ -380,18 +447,15 @@ class ExportPanel(QWidget):
                     wb = load_workbook(file_path)
                     ws = wb.active
                     
-                    # Bold the Header Columns
                     for cell in ws[1]:
                         cell.font = Font(bold=True)
                         
-                    # Find which column holds 'Heading'
                     heading_col_idx = None
                     for col_idx, cell in enumerate(ws[1], 1):
                         if cell.value == "Heading":
                             heading_col_idx = col_idx
                             break
                             
-                    # Bold the entire row if it is a Header row
                     if heading_col_idx:
                         for row in ws.iter_rows(min_row=2):
                             heading_cell = row[heading_col_idx - 1]
@@ -405,7 +469,7 @@ class ExportPanel(QWidget):
                 except Exception as e:
                     print(f"Failed to apply Excel styling: {e}")
                 
-                QMessageBox.information(self, "Saved", "Excel File saved successfully!")
+                QMessageBox.information(self, "Saved", f"{target_type} Excel File saved successfully!")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save Excel:\n{str(e)}")
 

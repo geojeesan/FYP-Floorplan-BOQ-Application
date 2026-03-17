@@ -22,8 +22,8 @@ class ReportState(TypedDict):
     report_type: str
     provider: str
     model: str
-    categorized_items: list  # Holds items after Python + Fallback LLM sorting
-    estimates: list          # Holds A-E estimates
+    categorized_items: list  
+    estimates: list          
     result_json: str
     error: str
 
@@ -49,8 +49,6 @@ POMI_SECTIONS = {
 
 def get_pomi_section(item_no, description):
     desc = description.lower()
-    
-    # Keyword Matching
     if "door" in desc or "window" in desc: return "H"
     if "tile" in desc or "paint" in desc or "emulsion" in desc or "laminate" in desc or "floor" in desc or "brick slip" in desc: return "J"
     if "toilet" in desc or "sink" in desc or "washbasin" in desc: return "O"
@@ -59,7 +57,6 @@ def get_pomi_section(item_no, description):
     if "sauna" in desc: return "N"
     if "wood" in desc or "oak" in desc: return "F"
     
-    # Prefix Matching
     if item_no.startswith("FL") or item_no.startswith("WL"): return "J"
     if item_no.startswith("DR") or item_no.startswith("WN"): return "H"
     if item_no.startswith("EA"): return "L"
@@ -67,10 +64,24 @@ def get_pomi_section(item_no, description):
     if item_no.startswith("CL"): return "M"
     if item_no.startswith("SB"): return "N"
     
-    return "Z" # Flags it for the Fallback LLM
+    return "Z"
+
+def extract_clean_json(text):
+    """Safely extracts a JSON array from LLM text, stripping markdown and conversational junk."""
+    # Strip markdown code blocks if the AI included them
+    if "```json" in text:
+        text = text.split("```json")[1]
+    if "```" in text:
+        text = text.split("```")[0]
+        
+    start = text.find('[')
+    end = text.rfind(']')
+    
+    if start != -1 and end != -1:
+        return text[start:end+1]
+    return "[]"
 
 def get_db_price_context():
-    """Generates a text summary of Mean, Median, and Mode database prices for the LLM."""
     ui_dir = os.path.dirname(os.path.abspath(__file__))
     root_dir = os.path.dirname(ui_dir)
     db_path = os.path.join(root_dir, "boq_materials.db")
@@ -82,34 +93,25 @@ def get_db_price_context():
             "Floors", "Walls", "Doors", "Windows", "Fixtures", 
             "Electrical Appliances", "Closet", "Toilet", "Sink"
         ]
-        
         for t in tables:
             try:
                 cursor.execute(f'SELECT cost, unit FROM "{t}" WHERE cost > 0')
                 rows = cursor.fetchall()
                 if not rows: continue
                 
-                # Group costs by their unit (e.g., separating 'sqm' prices from 'litre' prices)
                 unit_costs = {}
                 for cost, unit in rows:
                     unit_costs.setdefault(unit, []).append(cost)
                     
                 for unit, costs in unit_costs.items():
                     if not costs: continue
-                    
                     mean_val = round(statistics.mean(costs), 2)
                     median_val = round(statistics.median(costs), 2)
-                    
-                    # Handle mode safely (fallback to median if all prices are unique)
-                    try:
-                        mode_val = round(statistics.mode(costs), 2)
-                    except statistics.StatisticsError:
-                        mode_val = median_val 
-                        
+                    try: mode_val = round(statistics.mode(costs), 2)
+                    except statistics.StatisticsError: mode_val = median_val 
                     context.append(f"- {t} ({unit}): Mean=£{mean_val}, Median=£{median_val}, Mode=£{mode_val}")
             except sqlite3.OperationalError:
                 pass 
-                
         conn.close()
     except Exception as e:
         print(f"DB Context Error: {e}")
@@ -118,7 +120,76 @@ def get_db_price_context():
         return "No database averages available. Use standard industry estimates."
     return "\n".join(context)
 
-# Programmatic QTO Generator
+# QTO specific AI Estimator
+def estimate_qto_unassigned(data, provider, model, progress_signal=None):
+    """Specific function to inject costs into the raw QTO format, offloading math to Python."""
+    unassigned = [item for item in data if item.get("Type") == "Sub" and float(item.get("Rate", 0.0)) == 0.0]
+    
+    if not unassigned:
+        return data
+        
+    print(f"\n--- QTO AI ESTIMATOR: Found {len(unassigned)} unassigned items ---")
+    if progress_signal:
+        progress_signal.emit(f"AI estimating rates for {len(unassigned)} items...")
+        
+    db_context = get_db_price_context()
+    
+    try:
+        # Standard LLM call - No ReAct Agent needed here!
+        llm = get_llm(provider, model)
+        
+        sys_msg = f"""You are a Lead Quantity Surveyor. You have a list of extracted project items with NO ASSIGNED COST (Rate = 0).
+        
+YOUR CRITICAL TASK:
+1. Determine a realistic 'Rate' for each item using the statistical database context below.
+2. Prepend "[AI Estimate] - " to the beginning of the 'Base_Description'.
+
+DATABASE STATISTICS (Mean, Median, Mode):
+{db_context}
+
+Output ONLY a valid JSON array. 
+You MUST use strict DOUBLE QUOTES ("") for all property names and string values. Never use single quotes.
+Do not output markdown code blocks. 
+Do NOT calculate the Total_Amount. Only update the 'Rate' and 'Base_Description'.
+"""
+        messages = [
+            SystemMessage(content=sys_msg), 
+            HumanMessage(content=json.dumps(unassigned, indent=2))
+        ]
+        
+        print("Requesting rates from LLM...")
+        res = llm.invoke(messages).content.strip()
+        print("LLM Response received. Parsing and calculating totals in Python...")
+        
+        # Safely extract and parse JSON using our new helper
+        json_str = extract_clean_json(res)
+        fixed_items = json.loads(json_str)
+        
+        # Map the fixed items by Item_No
+        fixed_map = {item.get("Item_No"): item for item in fixed_items if "Item_No" in item}
+        
+        for i in range(len(data)):
+            if data[i].get("Type") == "Sub" and data[i].get("Item_No") in fixed_map:
+                est_item = fixed_map[data[i]["Item_No"]]
+                
+                # 1. Apply the AI's estimated rate and description
+                new_rate = float(est_item.get("Rate", 0.0))
+                data[i]["Rate"] = new_rate
+                data[i]["Base_Description"] = str(est_item.get("Base_Description", data[i]["Base_Description"]))
+                
+                # 2. Instantly calculate the math in Python
+                qty = float(data[i].get("Quantity", 0.0))
+                total = round(qty * new_rate, 2)
+                
+                data[i]["Total_Amount"] = total
+                data[i]["Markup_Percentage"] = 0.0
+                data[i]["Final_Amount"] = total
+                    
+    except Exception as e:
+        print(f"QTO AI Estimator Error: {e}")
+        
+    return data
+
 def generate_qto_programmatically(data):
     final_rows = []
     current_room_items = {}
@@ -147,7 +218,6 @@ def generate_qto_programmatically(data):
             }
         elif item.get("Type") == "Sub":
             raw_desc = item.get("Base_Description", "")
-            # Remove appended dimensions or quantities from the description text
             clean_desc = raw_desc.split(',')[0].strip() if raw_desc else ""
             
             unit = item.get("Unit", "")
@@ -156,21 +226,16 @@ def generate_qto_programmatically(data):
             height = item.get("Height", "")
             rate = item.get("Rate", 0.0)
             
-            try:
-                qty = float(item.get("Quantity", 1.0))
-            except (ValueError, TypeError):
-                qty = 1.0
+            try: qty = float(item.get("Quantity", 1.0))
+            except (ValueError, TypeError): qty = 1.0
                 
-            # Aggregation key: Items with same description, unit, and dimensions are merged
             agg_key = (clean_desc, unit, length, width, height, rate)
             
             if agg_key in current_room_items:
-                # Add to existing quantity
                 current_room_items[agg_key]["Quantity"] += qty
                 if rate:
                     current_room_items[agg_key]["Total_Amount"] = round(current_room_items[agg_key]["Quantity"] * float(rate), 2)
             else:
-                # Create new entry
                 total_amt = round(qty * float(rate), 2) if rate else ""
                 current_room_items[agg_key] = {
                     "Heading": "",
@@ -184,9 +249,7 @@ def generate_qto_programmatically(data):
                     "Total_Amount": total_amt
                 }
                 
-    flush_room() # Flush final room
-    
-    # Return as JSON string to perfectly satisfy export_panel.py's json.loads()
+    flush_room()
     return json.dumps(final_rows)
 
 def pre_aggregate_boq_data(data):
@@ -203,7 +266,6 @@ def pre_aggregate_boq_data(data):
             rate = item.get("Rate", 0.0)
             markup = item.get("Markup_Percentage", 0.0)
 
-            # Safely grab the pre-calculated numbers
             try: qty = float(item.get("Quantity", 0.0))
             except: qty = 0.0
             try: tot = float(item.get("Total_Amount", 0.0))
@@ -211,7 +273,6 @@ def pre_aggregate_boq_data(data):
             try: fin = float(item.get("Final_Amount", 0.0))
             except: fin = 0.0
 
-            # Grouping key
             key = (item_no, base_desc, unit, rate, markup)
 
             if key not in aggregated:
@@ -227,14 +288,12 @@ def pre_aggregate_boq_data(data):
                     "Final_Amount": 0.0
                 }
 
-            # Add up the math cleanly in Python
             aggregated[key]["Quantity"] += qty
             aggregated[key]["Total_Amount"] += tot
             aggregated[key]["Final_Amount"] += fin
             if current_room:
                 aggregated[key]["Locations"].add(current_room)
 
-    # Convert to a clean list for the LLM
     final_list = []
     for v in aggregated.values():
         locs = ", ".join(sorted(list(v["Locations"])))
@@ -252,14 +311,10 @@ def pre_aggregate_boq_data(data):
         
     return final_list
 
-# The Estimator
 def generate_estimates_node(state: ReportState):
-    print("\n--- ESTIMATOR (SECTIONS A-E) STARTED ---")
     if "BOQ" not in state["report_type"]: return state
-    
     try:
         llm = get_llm(state["provider"], state["model"])
-        
         sys_msg = """You are a Lead Estimator. Generate missing standard preliminary estimates for a building. 
 You MUST generate exactly one or more items for each of these sections:
 - Section A (General Requirements: e.g., Site Setup)
@@ -270,7 +325,7 @@ You MUST generate exactly one or more items for each of these sections:
 
 CRITICAL RULES:
 1. "Section_Code" must be "A", "B", "C", "D", or "E".
-2. "Section_Name" must be EXACTLY as listed above (e.g., "SECTION A - GENERAL REQUIREMENTS").
+2. "Section_Name" must be EXACTLY as listed above  (e.g., "SECTION A - GENERAL REQUIREMENTS").
 3. Description must start with "[AI Estimate] - ".
 4. Provide REALISTIC numerical values for Rate, Total_Amount, and Final_Amount. Do not use 0.0 for totals.
 
@@ -278,42 +333,29 @@ Output ONLY a JSON array of these objects. Start with [ and end with ]."""
 
         messages = [SystemMessage(content=sys_msg), HumanMessage(content="Generate the 5 estimates now.")]
         res = llm.invoke(messages).content.strip()
-        
         start, end = res.find('['), res.rfind(']')
-        if start != -1 and end != -1:
-            state["estimates"] = json.loads(res[start:end+1])
-        else:
-            state["estimates"] = []
+        if start != -1 and end != -1: state["estimates"] = json.loads(res[start:end+1])
+        else: state["estimates"] = []
     except Exception as e:
-        print(f"Estimator Error: {e}")
         state["estimates"] = []
-        
     return state
 
-# The Categorizer (LLM Fallback)
 def categorize_hybrid_node(state: ReportState):
-    print("\n--- HYBRID CATEGORIZER STARTED ---")
     if "BOQ" not in state["report_type"]: return state
-    
     categorized = []
     unknowns = []
     
-    # 1. Fast Python Sorting
     for item in state["raw_items"]:
         code = get_pomi_section(item["Item_No"], item["Base_Description"])
         item_copy = item.copy()
         item_copy["Description"] = f"{item['Base_Description']} (Location: {item['Location']})"
-        
-        if code == "Z":
-            unknowns.append(item_copy)
+        if code == "Z": unknowns.append(item_copy)
         else:
             item_copy["Section_Code"] = code
             item_copy["Section_Name"] = POMI_SECTIONS[code]
             categorized.append(item_copy)
             
-    # 2. LLM Fallback (Only runs if unknowns exist)
     if unknowns:
-        print(f"Python missed {len(unknowns)} items. Waking up LLM Fallback...")
         try:
             llm = get_llm(state["provider"], state["model"])
             sys_msg = """You are a master Quantity Surveyor. Categorize the provided list of unknown items into a single POMI section letter.
@@ -328,19 +370,15 @@ Example: [{"Item_No": "123", "Section_Code": "J"}]"""
             start, end = res.find('['), res.rfind(']')
             if start != -1 and end != -1:
                 llm_results = json.loads(res[start:end+1])
-                # Merge LLM answers back into unknowns
                 for unk in unknowns:
                     match = next((x for x in llm_results if x.get("Item_No") == unk["Item_No"]), None)
                     code = match.get("Section_Code", "A") if match else "A"
-                    # Force validate the hallucinated code
                     code = code.upper() if code.upper() in POMI_SECTIONS else "A"
                     unk["Section_Code"] = code
                     unk["Section_Name"] = POMI_SECTIONS[code]
                     categorized.append(unk)
-            else:
-                raise ValueError("LLM returned invalid JSON")
+            else: raise ValueError("LLM returned invalid JSON")
         except Exception as e:
-            print(f"Fallback LLM Error: {e}. Defaulting unknowns to Section A.")
             for unk in unknowns:
                 unk["Section_Code"] = "A"
                 unk["Section_Name"] = POMI_SECTIONS["A"]
@@ -349,26 +387,17 @@ Example: [{"Item_No": "123", "Section_Code": "J"}]"""
     state["categorized_items"] = categorized
     return state
 
-# The Unassigned Items Fixer
 def estimate_unassigned_items_node(state: ReportState):
-    print("\n--- AGENT 3: ESTIMATING UNASSIGNED ITEMS (WITH TOOLS) ---")
     if "BOQ" not in state["report_type"]: return state
-    
     categorized = state.get("categorized_items", [])
     unassigned = [item for item in categorized if float(item.get("Rate", 0.0)) == 0.0]
     assigned = [item for item in categorized if float(item.get("Rate", 0.0)) > 0.0]
     
-    if not unassigned:
-        print("No unassigned items found. Skipping...")
-        return state
+    if not unassigned: return state
         
-    print(f"Found {len(unassigned)} unassigned items. Waking up Estimator LLM...")
     db_context = get_db_price_context()
-    
     try:
         llm = get_llm(state["provider"], state["model"])
-        
-        # Give the agent access to our math tool
         tools = [calculate_item_total]
         agent = create_react_agent(llm, tools)
         
@@ -385,46 +414,28 @@ DATABASE STATISTICS (Mean, Median, Mode):
 {db_context}
 
 Output ONLY a JSON array of the updated objects. Maintain the exact same keys:
-"Item_No", "Section_Code", "Section_Name", "Description", "Unit", "Quantity", "Rate", "Total_Amount", "Markup_Percentage", "Final_Amount".
-"""
-        messages = [
-            SystemMessage(content=sys_msg), 
-            HumanMessage(content=json.dumps(unassigned, indent=2))
-        ]
-        
-        # Invoke the ReAct Agent
+"Item_No", "Section_Code", "Section_Name", "Description", "Unit", "Quantity", "Rate", "Total_Amount", "Markup_Percentage", "Final_Amount"."""
+        messages = [SystemMessage(content=sys_msg), HumanMessage(content=json.dumps(unassigned, indent=2))]
         res = agent.invoke({"messages": messages})
-        
-        # The final JSON response is stored in the last message of the agent's internal loop
         content = res["messages"][-1].content.strip()
-        
         start, end = content.find('['), content.rfind(']')
         if start != -1 and end != -1:
             fixed_items = json.loads(content[start:end+1])
             state["categorized_items"] = assigned + fixed_items
-        else:
-            raise ValueError("Agent failed to return valid JSON.")
-            
+        else: raise ValueError("Agent failed to return valid JSON.")
     except Exception as e:
-        print(f"Unassigned Estimator Error: {e}. Leaving rates at 0.")
+        print(f"Unassigned Estimator Error: {e}")
         
     return state
 
-# The Compiler
 def compile_json_node(state: ReportState):
-    print("\n--- PYTHON COMPILER: BUILDING FINAL TABLE ---")
     if "BOQ" not in state["report_type"]: return state
-    
     try:
         final_rows = []
         grouped_sections = {}
-        
-        # 1. Add Categorized Items (From Python/Fallback Node)
         for item in state.get("categorized_items", []):
             code = item["Section_Code"]
-            if code not in grouped_sections:
-                grouped_sections[code] = {"name": item["Section_Name"], "items": []}
-            
+            if code not in grouped_sections: grouped_sections[code] = {"name": item["Section_Name"], "items": []}
             grouped_sections[code]["items"].append({
                 "Heading": "", "Item_No": item["Item_No"], "Description": item["Description"],
                 "Unit": item["Unit"], "Quantity": item["Quantity"], "Rate": item["Rate"],
@@ -432,15 +443,11 @@ def compile_json_node(state: ReportState):
                 "Final_Amount": item["Final_Amount"]
             })
             
-        # 2. Add Estimates (A through E)
         for est in state.get("estimates", []):
             code = est.get("Section_Code", "A").upper()
             code = code if code in POMI_SECTIONS else "A"
             name = POMI_SECTIONS[code]
-            
-            if code not in grouped_sections:
-                grouped_sections[code] = {"name": name, "items": []}
-                
+            if code not in grouped_sections: grouped_sections[code] = {"name": name, "items": []}
             grouped_sections[code]["items"].append({
                 "Heading": "", "Item_No": "", "Description": est.get("Description", "[AI Estimate] - Item"),
                 "Unit": est.get("Unit", "Sum"), "Quantity": est.get("Quantity", 1.0), "Rate": est.get("Rate", 0.0),
@@ -448,41 +455,38 @@ def compile_json_node(state: ReportState):
                 "Final_Amount": est.get("Final_Amount", 0.0)
             })
             
-        # 3. Sort and Build Table
         for code in sorted(grouped_sections.keys()):
             section = grouped_sections[code]
             final_rows.append({
                 "Heading": section["name"], "Item_No": "", "Description": "", "Unit": "",
                 "Quantity": "", "Rate": "", "Total_Amount": "", "Markup_Percentage": "", "Final_Amount": ""
             })
-            for item in section["items"]:
-                final_rows.append(item)
+            for item in section["items"]: final_rows.append(item)
                 
         state["result_json"] = json.dumps(final_rows)
     except Exception as e:
         state["error"] = f"Compiler Error: {str(e)}"
-        
     return state
 
-# LangGraph Workflow Setup
 workflow = StateGraph(ReportState)
-
 workflow.add_node("categorize", categorize_hybrid_node)
-workflow.add_node("estimate_unassigned", estimate_unassigned_items_node) # NEW
-workflow.add_node("estimate_preliminaries", generate_estimates_node)     # Renamed slightly for clarity if needed, or keep your old node name
+workflow.add_node("estimate_unassigned", estimate_unassigned_items_node)
+workflow.add_node("estimate_preliminaries", generate_estimates_node)     
 workflow.add_node("compile", compile_json_node)
 
 workflow.add_edge(START, "categorize")
-workflow.add_edge("categorize", "estimate_unassigned")                 # NEW PATH
-workflow.add_edge("estimate_unassigned", "estimate_preliminaries")     # NEW PATH
+workflow.add_edge("categorize", "estimate_unassigned")                 
+workflow.add_edge("estimate_unassigned", "estimate_preliminaries")     
 workflow.add_edge("estimate_preliminaries", "compile")
 workflow.add_edge("compile", END)
 
 report_graph = workflow.compile()
 
+
 class ReportWorker(QThread):
     finished = Signal(str, str) 
     error = Signal(str)
+    progress = Signal(str) 
 
     def __init__(self, exact_math_data, report_type, provider, model):
         super().__init__()
@@ -495,12 +499,20 @@ class ReportWorker(QThread):
         try:
             # QTO Logic
             if "QTO" in self.report_type or "Take-off" in self.report_type:
-                json_output = generate_qto_programmatically(self.exact_math_data)
+                self.progress.emit("Reviewing Measurement Sheet items for missing costs...")
+                
+                # Run the AI to estimate unassigned items before generating the final sheet
+                estimated_data = estimate_qto_unassigned(self.exact_math_data, self.provider, self.model, self.progress)
+                
+                self.progress.emit("Structuring final Measurement Sheet rows...")
+                json_output = generate_qto_programmatically(estimated_data)
+                
+                self.progress.emit("Formatting complete!")
                 self.finished.emit(json_output, self.report_type)
                 return
 
             # BOQ Logic
-            # Use the pre-aggregator we wrote earlier to sum up the rooms!
+            self.progress.emit("Aggregating room data...")
             aggregated_list = pre_aggregate_boq_data(self.exact_math_data)
             
             initial_state = {
@@ -514,11 +526,26 @@ class ReportWorker(QThread):
                 "error": ""
             }
             
-            result_state = report_graph.invoke(initial_state)
+            self.progress.emit("Starting AI Pipeline Workflow...")
+            current_state = initial_state.copy()
             
-            if result_state.get("error"):
-                self.error.emit(result_state["error"])
+            for event in report_graph.stream(initial_state):
+                for node_name, state_update in event.items():
+                    current_state.update(state_update) 
+                    
+                    if node_name == "categorize":
+                        self.progress.emit("Categorizing items into POMI Industry Sections...")
+                    elif node_name == "estimate_unassigned":
+                        self.progress.emit("Agent calculating costs for unassigned items...")
+                    elif node_name == "estimate_preliminaries":
+                        self.progress.emit("Generating standard preliminary estimates (Sections A-E)...")
+                    elif node_name == "compile":
+                        self.progress.emit("Compiling final JSON report format...")
+            
+            if current_state.get("error"):
+                self.error.emit(current_state["error"])
             else:
-                self.finished.emit(result_state["result_json"], self.report_type)
+                self.finished.emit(current_state["result_json"], self.report_type)
+                
         except Exception as e:
             self.error.emit(str(e))

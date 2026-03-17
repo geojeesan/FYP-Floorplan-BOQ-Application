@@ -401,6 +401,11 @@ class LegendWidget(QWidget):
             return
 
         initial_qcolor = QColor(current_color[0], current_color[1], current_color[2])
+        color_dialog = QColorDialog(initial_qcolor, self)
+        color_dialog.setWindowTitle("Select New Color")
+        color_dialog.setOption(QColorDialog.DontUseNativeDialog, True)
+        AddMeasurementDialog.apply_mica(color_dialog)
+
         new_qcolor = QColorDialog.getColor(initial_qcolor, self, "Select New Color")
 
         if not new_qcolor.isValid():
