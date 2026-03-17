@@ -19,37 +19,70 @@ from langchain_core.tools import tool
 from langchain.agents import create_agent
 from langchain_core.callbacks import StreamingStdOutCallbackHandler
 
+from PySide6.QtWidgets import QScrollArea
+from PySide6.QtCore import QTimer
+
 # Load environment variables (API Keys) from .env file
 load_dotenv()
 
 @tool
-def query_materials_database(query: str) -> str:
+def query_materials_database(table_name: str) -> str:
     """
-    Executes a SELECT SQL query on the materials database to retrieve cost or specification data.
-    Use this to find pricing or brand name not found in the floorplan JSON context. DO NOT use this for getting information about the floorplan itself, only for external data about materials.
-    Available tables: Floors, Walls, Doors, Windows, Fixtures, Electrical Appliances, Closet, Toilet, Sink, Sauna Bench, Fire Place, Bathtub, Chimney
-    Each table has columns: item_no, item_name, brand_name, cost, unit, markup_percentage
+    Retrieves all available materials and pricing for a specific category.
+    Use this to find costs or brand options to answer user questions about materials.
+    
+    CRITICAL RULES FOR THE AGENT:
+    1. You must provide ONLY the exact table name from the list below. Do NOT write SQL.
+    2. Available table_name options: 
+       'Floors', 'Walls', 'Doors', 'Windows', 'Fixtures', 'Electrical Appliances', 
+       'Closet', 'Toilet', 'Sink', 'Sauna Bench', 'Fire Place', 'Bathtub', 'Chimney'
     """
+    # 1. Validate input strictly to prevent SQL injection and LLM hallucinations
+    valid_tables = [
+        "Floors", "Walls", "Doors", "Windows", "Fixtures", "Electrical Appliances", 
+        "Closet", "Toilet", "Sink", "Sauna Bench", "Fire Place", "Bathtub", "Chimney"
+    ]
+    
+    # Strip any accidental quotes the LLM might add
+    clean_table_name = table_name.strip("'\"")
+    
+    if clean_table_name not in valid_tables:
+        return f"Error: '{clean_table_name}' is not a valid category. You must choose exactly from the allowed list. Do not write SQL."
+
     try:
         db_path = 'boq_materials.db' 
-        
-        # Safety check: Prevent destructive queries
-        if not query.strip().upper().startswith("SELECT"):
-            return "Error: Only SELECT queries are allowed for safety."
-            
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
+        
+        # 2. Programmatically execute the query safely
+        # We wrap the table name in brackets [ ] in case of spaces like "Electrical Appliances"
+        # We explicitly select only the text/number columns, ignoring any heavy image BLOB columns if they exist
+        query = f"SELECT item_no, item_name, brand_name, cost, unit, markup_percentage FROM [{clean_table_name}]"
+        
         cursor.execute(query)
-        results = cursor.fetchall()
+        raw_results = cursor.fetchall()
+        
+        # Grab the column headers so the LLM knows what the data means
+        headers = [description[0] for description in cursor.description]
+        
         conn.close()
 
-        print(f"Tool run - Executed query: {query} | Results: {results}")  
+        if not raw_results:
+            return f"No materials found in the {clean_table_name} category. Tell the user in natural language that this category is currently empty in the database."
+
+        # 3. Sanitize the results (safety net for binary data)
+        # We put the headers as the first item in the list so the LLM has context
+        clean_results = [tuple(headers)] 
+        for row in raw_results:
+            clean_row = tuple("[IMAGE DATA]" if isinstance(col, bytes) else col for col in row)
+            clean_results.append(clean_row)
+
+        print(f"Tool run - Fetched table: {clean_table_name} | Returned {len(raw_results)} items.")  
         
-        if not results:
-            return "No results found in the database."
-        return str(results)
+        return str(clean_results)
+        
     except Exception as e:
-        return f"Database query error: {e}"
+        return f"Database query error: {str(e)}. Tell the user you encountered an error reading the database."
 
 @tool
 def convert_units(value: float, from_unit: str, to_unit: str) -> str:
@@ -177,8 +210,7 @@ class ChatWorker(QThread):
             agent_executor = create_agent(llm, tools)
 
             context_str = json.dumps(self.context_data, indent=2)
-            messages = [
-                SystemMessage(content=(
+            base_system_prompt = (
                     "You are an expert architectural and floorplan assistant. "
                     "CRITICAL RULES: \n"
                     "1. MATH: You MUST use the 'calculate' tool for EVERY single mathematical operation (addition, multiplication, division, etc.). Never attempt to calculate numbers yourself.\n"
@@ -188,8 +220,9 @@ class ChatWorker(QThread):
                     "5. CURRENCY: Always format costs and prices using the British Pound symbol (£) unless the user specifically asks for another currency.\n\n"
                     f"Floorplan Context Data:\n{context_str}\n\n"
                     "Answer the user's questions based on this data. Keep answers concise."
-                ))
-            ]
+                )
+
+            messages = [SystemMessage(content=base_system_prompt)]
 
             for role, text in self.history:
                 if role == "You":
@@ -199,8 +232,25 @@ class ChatWorker(QThread):
             
             messages.append(HumanMessage(content=self.prompt))
 
-            result = agent_executor.invoke({"messages": messages})
-            final_answer = result["messages"][-1].content
+            max_retries = 2
+            final_answer = ""
+
+            for attempt in range(max_retries):
+                result = agent_executor.invoke({"messages": messages})
+                final_answer = result["messages"][-1].content.strip()
+
+                # 3. Intercept the JSON leak
+                if final_answer.startswith('{"') or final_answer.startswith('```json'):
+                    print(f"Worker - Caught JSON leak on attempt {attempt + 1}. Wiping memory and retrying...")
+                    
+                    # Update the system prompt to be explicitly aggressive about the failure
+                    strict_system_prompt = base_system_prompt + "\n\nCRITICAL ERROR: YOU JUST ATTEMPTED TO OUTPUT RAW JSON TO THE USER. THIS IS FORBIDDEN. YOU MUST RESPOND IN NATURAL LANGUAGE."
+                    messages[0] = SystemMessage(content=strict_system_prompt)
+                    continue
+                else:
+                    break
+
+            # 4. Emit the final answer
             self.finished.emit(final_answer)
 
         except Exception as e:
@@ -230,11 +280,21 @@ class AIChatPanel(QWidget):
         header_layout.addWidget(self.provider_combo)
         header_layout.addWidget(self.model_combo)
         layout.addLayout(header_layout)
+
+        # Chat History Area (Replaced QTextEdit with QScrollArea)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setStyleSheet("background: transparent; border: none;")
         
-        # Chat History Area
-        self.chat_history = QTextEdit()
-        self.chat_history.setReadOnly(True)
-        layout.addWidget(self.chat_history)
+        # Container to hold all the individual chat bubble widgets
+        self.chat_container = QWidget()
+        self.chat_container.setStyleSheet("background: transparent;")
+        self.chat_layout = QVBoxLayout(self.chat_container)
+        self.chat_layout.setAlignment(Qt.AlignTop) # Stack messages from the top
+        self.chat_layout.setSpacing(10)
+        
+        self.scroll_area.setWidget(self.chat_container)
+        layout.addWidget(self.scroll_area)
         
         # Input Field
         self.input_field = QLineEdit()
@@ -263,6 +323,51 @@ class AIChatPanel(QWidget):
         
         # Initialize the dropdowns
         self.refresh_providers()
+
+    def append_bubble(self, role, text, is_thinking=False):
+        bubble_layout = QHBoxLayout()
+        bubble_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Create the widget for the message
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setTextInteractionFlags(Qt.TextSelectableByMouse) # Let users copy text
+        
+        # Prevent the bubble from stretching across the whole screen
+        label.setMaximumWidth(int(self.scroll_area.width() * 0.85))
+
+        if role == "You":
+            # User styling (Green, Right-aligned)
+            label.setStyleSheet("""
+                background-color: #dcf8c6; 
+                color: black; 
+                border-radius: 10px; 
+                padding: 10px; 
+                font-size: 13px;
+            """)
+            bubble_layout.addStretch()  # Pushes the label to the right
+            bubble_layout.addWidget(label)
+        else:
+            # AI styling (Gray, Left-aligned)
+            label.setStyleSheet("""
+                background-color: #e5e5ea; 
+                color: black; 
+                border-radius: 10px; 
+                padding: 10px; 
+                font-size: 13px;
+            """)
+            bubble_layout.addWidget(label)
+            bubble_layout.addStretch()  # Pushes the label to the left
+
+        # Add the horizontal layout (the bubble) to the main vertical chat layout
+        self.chat_layout.addLayout(bubble_layout)
+
+        # Scroll to the bottom slightly after the widget is rendered
+        QTimer.singleShot(10, self.scroll_to_bottom)
+
+    def scroll_to_bottom(self):
+        scrollbar = self.scroll_area.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
 
     def refresh_providers(self):
         """Reads enabled providers from settings and refreshes the dropdown."""
@@ -330,38 +435,30 @@ class AIChatPanel(QWidget):
             self.current_viewer.chat_log = []
         self.refresh_display()
 
-    def append_bubble(self, role, text, is_thinking=False):
-        if role == "You":
-            color, align, margin = "#dcf8c6", "right", "margin-left: 50px;"
-        else:
-            color, align, margin = "#e5e5ea", "left", "margin-right: 50px;"
-
-        formatted_text = f"""
-        <div align="{align}">
-            <table style="background-color: {color}; border-radius: 10px; {margin}">
-                <tr>
-                    <td style="padding: 10px; color: black; border-radius: 10px; font-size: 13px;">
-                        {text}
-                    </td>
-                </tr>
-            </table>
-        </div>
-        <br>
-        """
-        cursor = self.chat_history.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        self.chat_history.setTextCursor(cursor)
-        self.chat_history.insertHtml(formatted_text)
-        self.chat_history.moveCursor(QTextCursor.End)
-
     def refresh_display(self):
-        self.chat_history.clear()
+        # Clear existing bubbles
+        while self.chat_layout.count():
+            item = self.chat_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+            else:
+                # If it's a layout (like our bubble_layout), we need to clear its items too
+                sub_layout = item.layout()
+                while sub_layout.count():
+                    sub_item = sub_layout.takeAt(0)
+                    if sub_item.widget():
+                        sub_item.widget().deleteLater()
         
         if not self.current_viewer:
-            self.chat_history.setHtml("<i style='color:gray'>No active document.</i>")
             self.input_field.setEnabled(False)
             self.send_btn.setEnabled(False)
             self.clear_btn.setEnabled(False)
+            # Add a placeholder label
+            placeholder = QLabel("<i>No active document.</i>")
+            placeholder.setStyleSheet("color: gray;")
+            placeholder.setAlignment(Qt.AlignCenter)
+            self.chat_layout.addWidget(placeholder)
             return
         
         self.input_field.setEnabled(True)
