@@ -27,6 +27,10 @@ The application is built using a modern technology stack to ensure performance, 
 ## Results
 The **PDF BOQ Viewer** significantly reduces the time required for manual takeoff. By combining spatial segmentation with OCR, the application accurately identifies rooms and calculates their areas, subsequently generating detailed, scaled BOQ estimates. The built-in 3D modeler gives estimators an immediate spatial understanding of the project without needing external CAD tools, and the AI chatbot provides contextual assistance on demand.
 
+## Demo
+
+[Video](https://www.youtube.com/watch?v=ADBbxf-RhVI)
+
 ## How to Get It Running
 
 ### Note
@@ -38,7 +42,7 @@ It is highly recommended to run this on Windows. Although theoretically it can r
 
 ### Installation Steps
 
-1. **Clone or Download the Repository:**
+1. **Clone the Repository:**
    Ensure you have all the project files in your local directory.
 
 2. **Create a Virtual Environment (Optional but recommended):**
