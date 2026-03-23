@@ -428,6 +428,7 @@ class PDFViewerApp(QMainWindow):
         self.legend.ocrLabelsToggled.connect(self.on_toggle_ocr_labels)
         self.legend.roomsToggled.connect(self.on_toggle_rooms)
         self.legend.itemsToggled.connect(self.on_toggle_items)
+        self.legend.imageToggled.connect(self.on_toggle_image)
         self.legend_scroll.setWidget(self.legend)
         self.right_stack.addWidget(self.legend_scroll)
         
@@ -524,6 +525,11 @@ class PDFViewerApp(QMainWindow):
         self.controls.hide()
 
         self.add_new_tab(StartScreenWidget(self), "New Tab")
+
+    def on_toggle_image(self, is_checked):
+        viewer = self.current_widget()
+        if isinstance(viewer, DocumentViewer) and viewer.has_analysis_data:
+            viewer.toggle_base_image(is_checked)
 
     def apply_mica(self):
         if os.name == 'nt':
@@ -909,7 +915,32 @@ class PDFViewerApp(QMainWindow):
             self.legend.btn_ocr.setEnabled(False) 
             self.legend.show_progress() 
             
-            self.ocr_worker = OCRWorker(viewer.file_path)
+            target_path = viewer.file_path
+            
+            if target_path.lower().endswith('.boq'):
+                import random
+                import os
+                import zipfile
+                
+                # Create an absolute path for the temporary image
+                temp_filename = f"temp_ocr_src_{random.randint(0,10000)}.png"
+                target_path = os.path.abspath(temp_filename)
+                
+                try:
+                    # Extract the raw original.png bytes directly from the .boq archive
+                    with zipfile.ZipFile(viewer.file_path, 'r') as zf:
+                        if "original.png" in zf.namelist():
+                            with open(target_path, "wb") as f:
+                                f.write(zf.read("original.png"))
+                            self.temp_files.append(target_path)
+                        else:
+                            self.on_ocr_error("No original image found in this .boq file.")
+                            return
+                except Exception as e:
+                    self.on_ocr_error(f"Failed to extract image for OCR: {e}")
+                    return
+
+            self.ocr_worker = OCRWorker(target_path)
             self.ocr_worker.finished.connect(self.on_ocr_finished)
             self.ocr_worker.error.connect(self.on_ocr_error)
             self.ocr_worker.start()
@@ -922,7 +953,7 @@ class PDFViewerApp(QMainWindow):
         self.legend.hide_progress() 
         
         if isinstance(viewer, DocumentViewer):
-            viewer.set_ocr_layer(layer_path)
+            viewer.set_ocr_data(data_list)
             self.temp_files.append(layer_path)
             
             if viewer.has_analysis_data and viewer.boq_data:

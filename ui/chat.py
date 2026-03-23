@@ -218,6 +218,8 @@ class ChatWorker(QThread):
                     "3. MATERIALS: Use the 'query_materials_database' tool to retrieve cost information for materials. Do not use this for getting information about the floorplan itself.\n"
                     "4. UNITS: Use the 'convert_units' tool to convert measurements between different units.\n"
                     "5. CURRENCY: Always format costs and prices using the British Pound symbol (£) unless the user specifically asks for another currency.\n\n"
+                    "6. PRICING LOGIC: The 'cost' field in the materials data represents the UNIT COST (cost per square meter or per linear meter). To find the 'total cost' of a material for a room, you MUST ALWAYS multiply the unit cost by the room's area (for floors/ceilings) or perimeter (for skirting/walls) using the 'calculate' tool. If the unit is litres then 1 litre paints 5 square meters.\n\n"
+                f"Floorplan Context Data:\n{context_str}\n\n"
                     f"Floorplan Context Data:\n{context_str}\n\n"
                     "Answer the user's questions based on this data. Keep answers concise."
                 )
@@ -307,11 +309,26 @@ class AIChatPanel(QWidget):
         
         self.send_btn = QPushButton("Ask")
         self.send_btn.clicked.connect(self.send_message)
-        self.send_btn.setStyleSheet("background-color: #fb9a44; color: white; font-weight: bold;")
+        self.send_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #fb9a44; color: white; font-size: 14px; 
+                padding: 12px; border-radius: 6px; font-weight: bold;
+                text-align: center; padding-left: 15px;
+            }
+            QPushButton:hover { background-color: #e08c3a; }
+            QPushButton:disabled { background-color: #555555; color: #666666; }
+        """)
         
         self.clear_btn = QPushButton("Clear Chat")
         self.clear_btn.clicked.connect(self.clear_current_chat)
-        self.clear_btn.setStyleSheet("background-color: rgba(255, 255, 255, 20); color: white;")
+        self.clear_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(255, 255, 255, 20); color: white; font-size: 14px; 
+                padding: 12px; border-radius: 6px; font-weight: bold;
+                text-align: center; padding-left: 15px;
+            }
+            QPushButton:hover { background-color: rgba(255, 255, 255, 30); }
+        """)
         
         btn_layout.addWidget(self.send_btn, stretch=3)
         btn_layout.addWidget(self.clear_btn, stretch=1)

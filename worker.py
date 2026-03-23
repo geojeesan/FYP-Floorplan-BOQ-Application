@@ -9,10 +9,8 @@ import constants
 # CubiCasa5k Imports
 try:
     import torch
-    import torch.nn as nn
     from floortrans.models.hg_furukawa_original import hg_furukawa_original
     from floortrans.post_prosessing import split_prediction, get_polygons
-    from floortrans.plotting import polygons_to_image
 except ImportError as e:
     print(f"Error importing CubiCasa modules: {e}")
     torch = None
@@ -42,10 +40,11 @@ def init_easyocr():
         print(f"Failed to load EasyOCR: {e}")
         _HAS_EASYOCR = False
 
+
 class CubiCasaWorker(QThread):
     """
-    Standard CubiCasa analysis (Rooms/Items/Polygons).
-    OCR has been removed from here.
+    Standard CubiCasa analysis.
+    Optimized for Data-Only Extraction (No heavy raster image generation).
     """
     finished = Signal(str, str, str)  # room_path, item_path, json_path
     error = Signal(str)
@@ -93,34 +92,6 @@ class CubiCasaWorker(QThread):
             with torch.no_grad():
                 pred = model(input_tensor)
 
-            pred_np = pred.cpu().numpy()[0]
-            
-            # Helper: Create Overlay
-            def create_overlay(segmentation_map, colors, start_idx=1, smoothing=True):
-                overlay = np.zeros((height, width, 4), dtype=np.uint8)
-                for i in range(start_idx, len(colors)):
-                    if i >= len(colors): break
-                    mask = (segmentation_map == i).astype(np.uint8) * 255
-                    mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
-                    if smoothing:
-                        mask = cv2.GaussianBlur(mask, (7, 7), 0)
-                        _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
-                    if np.any(mask):
-                        overlay[mask > 0, 0:3] = colors[i]
-                        overlay[mask > 0, 3] = 140 
-                return overlay
-
-            room_colors, icon_colors = constants.get_class_colors()
-
-            # Initial Visual Layers (Rough)
-            room_pred = pred_np[21:33]
-            room_seg = np.argmax(room_pred, axis=0)
-            room_layer = create_overlay(room_seg, room_colors, start_idx=1)
-
-            icon_pred = pred_np[33:44]
-            icon_seg = np.argmax(icon_pred, axis=0)
-            item_layer = create_overlay(icon_seg, icon_colors, start_idx=1)
-
             boq_data = {"rooms": [], "icons": []}
 
             # Polygon Extraction
@@ -129,11 +100,6 @@ class CubiCasaWorker(QThread):
                 heatmaps, rooms, icons = split_prediction(pred, [height, width], split)
                 polygons, types, room_polygons, room_types = get_polygons((heatmaps, rooms, icons), 0.4, [1, 2])
                 
-                # Rasterize Vectors for clean layers
-                pol_room_seg, pol_icon_seg = polygons_to_image(polygons, types, room_polygons, room_types, height, width)
-                room_layer = create_overlay(pol_room_seg, room_colors, start_idx=1, smoothing=False)
-                item_layer = create_overlay(pol_icon_seg, icon_colors, start_idx=1, smoothing=False)
-
                 # Process Rooms
                 for i, poly in enumerate(room_polygons):
                     class_idx = room_types[i]['class']
@@ -147,7 +113,8 @@ class CubiCasaWorker(QThread):
                                 "class_id": int(class_idx), "label": label_name, 
                                 "area_pixels": float(area_px), "points": points.tolist() 
                             })
-                    except: pass
+                    except Exception as e:
+                        pass
 
                 # Process Icons, Doors, Windows, and Walls
                 for i, poly in enumerate(polygons):
@@ -156,25 +123,26 @@ class CubiCasaWorker(QThread):
                     p_type = type_info.get('type', '')
                     
                     if p_type == 'wall':
-                        # Wall and Railing
                         label_name = constants.ROOM_CLASSES[class_idx] if 0 <= class_idx < len(constants.ROOM_CLASSES) else "Unknown"
                         boq_data["rooms"].append({"class_id": int(class_idx), "label": label_name, "points": poly.tolist()})
                     elif p_type != 'room': 
-                        # Catch icons, doors, windows, etc.
                         label_name = constants.ICON_CLASSES[class_idx] if 0 <= class_idx < len(constants.ICON_CLASSES) else "Unknown"
                         boq_data["icons"].append({"class_id": int(class_idx), "label": label_name, "points": poly.tolist()})
                     
             except Exception as e:
                 print(f"Polygon extraction error: {e}")
 
-            # Save
+            # --- SAVE DATA ---
             base_name = os.path.splitext(os.path.basename(self.image_path))[0]
             room_path = f"temp_{base_name}_rooms.png"
             item_path = f"temp_{base_name}_items.png"
             json_path = f"temp_{base_name}_data.json"
             
-            cv2.imwrite(room_path, cv2.cvtColor(room_layer, cv2.COLOR_RGBA2BGRA))
-            cv2.imwrite(item_path, cv2.cvtColor(item_layer, cv2.COLOR_RGBA2BGRA))
+            # Since the UI now uses vectors, we generate tiny 1x1 invisible pixels 
+            # just to satisfy the main_window's file-loading pipeline.
+            dummy_img = np.zeros((1, 1, 4), dtype=np.uint8)
+            cv2.imwrite(room_path, dummy_img)
+            cv2.imwrite(item_path, dummy_img)
             
             with open(json_path, 'w') as f:
                 json.dump(boq_data, f, indent=4)
@@ -188,8 +156,7 @@ class CubiCasaWorker(QThread):
 class OCRWorker(QThread):
     """
     Dedicated worker for Multi-directional OCR.
-    Includes Non-Maximum Suppression to remove duplicates.
-    Generates a dedicated transparent layer.
+    Optimized for pure data extraction (No OpenCV text blending).
     """
     finished = Signal(str, list) # (layer_path, data_list)
     error = Signal(str)
@@ -199,7 +166,6 @@ class OCRWorker(QThread):
         self.image_path = image_path
 
     def calculate_iou(self, boxA, boxB):
-        # determine the (x, y)-coordinates of the intersection rectangle
         xA = max(boxA[0], boxB[0])
         yA = max(boxA[1], boxB[1])
         xB = min(boxA[2], boxB[2])
@@ -239,7 +205,7 @@ class OCRWorker(QThread):
                 results = EASYOCR_READER.readtext(scan_img)
                 
                 for (bbox, text, prob) in results:
-                    if prob < 0.50: continue # User requested > 50% only
+                    if prob < 0.50: continue 
 
                     # Transform back to global coords
                     clean_bbox = []
@@ -247,7 +213,6 @@ class OCRWorker(QThread):
                         ox, oy = trans_func(p[0], p[1], width, height)
                         clean_bbox.append([int(ox), int(oy)])
                     
-                    # Convert to rect [x1, y1, x2, y2] for IOU check
                     pts = np.array(clean_bbox)
                     x_min, y_min = np.min(pts, axis=0)
                     x_max, y_max = np.max(pts, axis=0)
@@ -261,147 +226,38 @@ class OCRWorker(QThread):
                     })
 
             # 2. Non-Maximum Suppression (Deduplication)
-            # Sort by confidence descending
             candidates.sort(key=lambda x: x["conf"], reverse=True)
             final_results = []
             
             while candidates:
                 best = candidates.pop(0)
+                
+                # Rules for Text Post-Processing
+                text_str = best["text"].strip()
+                if re.match(r'^\d+(\.\d+)?$', text_str):
+                    continue # Ignore if it's just a number
+                
+                if text_str == "JM":
+                    text_str = "WC" # Common floorplan OCR mistake fix
+                
+                best["text"] = text_str
                 final_results.append(best)
                 
                 # Compare best against all remaining to find duplicates
                 remaining = []
                 for other in candidates:
                     iou = self.calculate_iou(best["rect"], other["rect"])
-                    # If they overlap significantly (> 20%), assume they are the same text
-                    # Since 'best' has higher confidence, we keep 'best' and discard 'other'
                     if iou < 0.20:
                         remaining.append(other)
                 candidates = remaining
 
-            # 3. Create Visual Layer
-            ocr_layer = np.zeros((height, width, 4), dtype=np.uint8)
-            
-            for item in final_results:
-                text_str = item["text"].strip()
-                rightside = True
-
-                # Rules for Text Post-Processing
-                # 1. Ignore if it's just a number (e.g. "45", "12.5") without unit
-                if re.match(r'^\d+(\.\d+)?$', text_str):
-                    continue
-                
-                # 2. Replace JM -> WC
-                if text_str == "JM":
-                    text_str = "WC"
-                    rightside = False
-                
-                # Update item text for downstream use (JSON)
-                item["text"] = text_str
-
-                pts = np.array(item["poly"], dtype=np.int32)
-                rect_x, rect_y, rect_w, rect_h = cv2.boundingRect(pts)
-                center_x, center_y = rect_x + rect_w // 2, rect_y + rect_h // 2
-                
-                # Prepare Text Logic
-                font = cv2.FONT_HERSHEY_SIMPLEX
-                scale = 0.6
-                thickness = 1
-                
-                # Get text size
-                (t_w, t_h), baseline = cv2.getTextSize(text_str, font, scale, thickness)
-                t_h += baseline 
-
-                # Create a small canvas for the text
-                # Add some padding
-                pad = 10
-                canvas_w = t_w + pad * 2
-                canvas_h = t_h + pad * 2
-                
-                text_canvas = np.zeros((canvas_h, canvas_w, 4), dtype=np.uint8)
-                
-                # Draw text centered on canvas
-                # Text origin is bottom-left
-                org_x = pad
-                org_y = canvas_h - pad - baseline // 2
-                
-                # Black Text
-                cv2.putText(text_canvas, text_str, (org_x, org_y), font, scale, (0, 0, 0, 255), thickness, cv2.LINE_AA)
-
-                # Rotate Canvas if needed
-                angle = item["angle"]
-                if angle == "90":
-                    if rightside:
-                        text_canvas = cv2.rotate(text_canvas, cv2.ROTATE_90_COUNTERCLOCKWISE)
-                    else:
-                        text_canvas = cv2.rotate(text_canvas, cv2.ROTATE_90_CLOCKWISE)
-                elif angle == "180":
-                    if rightside:
-                        text_canvas = cv2.rotate(text_canvas, cv2.ROTATE_180)
-                elif angle == "270":
-                    if rightside:
-                        text_canvas = cv2.rotate(text_canvas, cv2.ROTATE_90_CLOCKWISE)
-                    else:
-                        text_canvas = cv2.rotate(text_canvas, cv2.ROTATE_90_COUNTERCLOCKWISE)
-
-                # Paste canvas onto main layer centered at (center_x, center_y)
-                cw, ch = text_canvas.shape[1], text_canvas.shape[0]
-                
-                top_left_x = center_x - cw // 2
-                top_left_y = center_y - ch // 2
-                
-                # Bounds check
-                if top_left_x < 0: top_left_x = 0
-                if top_left_y < 0: top_left_y = 0
-                
-                # Calculate slice coords
-                end_x = top_left_x + cw
-                end_y = top_left_y + ch
-                
-                # Clip width/height if it goes off screen
-                if end_x > width: end_x = width
-                if end_y > height: end_y = height
-                
-                # Adjust canvas slice if clipped
-                valid_w = end_x - top_left_x
-                valid_h = end_y - top_left_y
-                
-                if valid_w <= 0 or valid_h <= 0: continue
-                
-                # Re-calc theoretical placement
-                tl_x = center_x - cw // 2
-                tl_y = center_y - ch // 2
-                
-                start_x_layer = max(0, tl_x)
-                start_y_layer = max(0, tl_y)
-                end_x_layer = min(width, tl_x + cw)
-                end_y_layer = min(height, tl_y + ch)
-                
-                start_x_canvas = start_x_layer - tl_x
-                start_y_canvas = start_y_layer - tl_y
-                end_x_canvas = start_x_canvas + (end_x_layer - start_x_layer)
-                end_y_canvas = start_y_canvas + (end_y_layer - start_y_layer)
-                
-                if end_x_layer > start_x_layer and end_y_layer > start_y_layer:
-                    # Blend
-                    roi = ocr_layer[start_y_layer:end_y_layer, start_x_layer:end_x_layer]
-                    snippet = text_canvas[start_y_canvas:end_y_canvas, start_x_canvas:end_x_canvas]
-                    
-                    # Alpha blending
-                    # snippet has alpha channel in index 3
-                    alpha_msk = snippet[:, :, 3] / 255.0
-                    alpha_inv = 1.0 - alpha_msk
-                    
-                    for c in range(3):
-                        roi[:, :, c] = (alpha_msk * snippet[:, :, c] + alpha_inv * roi[:, :, c])
-                    roi[:, :, 3] = np.maximum(roi[:, :, 3], snippet[:, :, 3]) # Simple alpha max
-                    
-                    ocr_layer[start_y_layer:end_y_layer, start_x_layer:end_x_layer] = roi
+            # 3. Create Dummy Layer (UI handles drawing natively now)
+            ocr_layer = np.zeros((1, 1, 4), dtype=np.uint8)
 
             # 4. Save
             base_name = os.path.splitext(os.path.basename(self.image_path))[0]
             layer_path = f"temp_{base_name}_ocr_layer.png"
-            cv2.imwrite(layer_path, cv2.cvtColor(ocr_layer, cv2.COLOR_RGBA2BGRA))
+            cv2.imwrite(layer_path, ocr_layer)
             
             self.finished.emit(layer_path, final_results)
 

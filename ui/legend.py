@@ -1,4 +1,5 @@
 import json
+import numpy as np
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QProgressBar,
     QMessageBox, QInputDialog, QDialog, QFormLayout, QLineEdit, QComboBox,
@@ -12,6 +13,16 @@ from .viewer import DocumentViewer
 from .material_assigner import MaterialAssignmentDialog
 import os
 import ctypes
+
+class NpEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super(NpEncoder, self).default(obj)
 
 class MARGINS(ctypes.Structure):
     _fields_ = [("cxLeftWidth", ctypes.c_int),
@@ -93,6 +104,7 @@ class ColorLabel(QLabel):
 class LegendWidget(QWidget):
     ocrRequested = Signal(bool) # Signal to Main Window: True=Show/Run, False=Hide
     ocrLabelsToggled = Signal(bool) # Signal to use OCR text as labels
+    imageToggled = Signal(bool)
     roomsToggled = Signal(bool)
     itemsToggled = Signal(bool)
 
@@ -126,13 +138,26 @@ class LegendWidget(QWidget):
         self.items_wrapper_layout = QVBoxLayout(self.items_wrapper)
         self.items_wrapper_layout.setContentsMargins(0,0,0,0)
 
+        # 0. Base Image Toggle
+        self.btn_toggle_image = QPushButton("Hide Base Image")
+        self.btn_toggle_image.setIcon(qta.icon('fa5s.eye', color='white'))
+        self.btn_toggle_image.setCheckable(True)
+        self.btn_toggle_image.setChecked(True)
+        self.btn_toggle_image.setCursor(Qt.PointingHandCursor)
+        self.btn_toggle_image.setStyleSheet(self._get_btn_style(True))
+        self.btn_toggle_image.clicked.connect(self.on_image_clicked)
+        self.btn_toggle_image.setVisible(False) # Hidden initially
+        self.layout.addWidget(self.btn_toggle_image)
+
         # 1. Rooms Toggle and Section
-        self.btn_toggle_rooms = QPushButton("Show Rooms and Structures")
+        self.btn_toggle_rooms = QPushButton("Hide Rooms and Structures")
+        self.btn_toggle_rooms.setIcon(qta.icon('fa5s.eye', color='white'))
         self.btn_toggle_rooms.setCheckable(True)
         self.btn_toggle_rooms.setChecked(True)
         self.btn_toggle_rooms.setCursor(Qt.PointingHandCursor)
-        self.btn_toggle_rooms.setStyleSheet(self._get_btn_style(False))
+        self.btn_toggle_rooms.setStyleSheet(self._get_btn_style(True))
         self.btn_toggle_rooms.clicked.connect(self.on_rooms_clicked)
+        self.btn_toggle_rooms.setVisible(False) # Hidden initially
         self.layout.addWidget(self.btn_toggle_rooms)
         
         # Rooms Content
@@ -144,12 +169,14 @@ class LegendWidget(QWidget):
         self.layout.addWidget(self.rooms_wrapper)
 
         # 2. Items Toggle and Section
-        self.btn_toggle_items = QPushButton("Show Items")
+        self.btn_toggle_items = QPushButton("Hide Items")
+        self.btn_toggle_items.setIcon(qta.icon('fa5s.eye', color='white'))
         self.btn_toggle_items.setCheckable(True)
         self.btn_toggle_items.setChecked(True)
         self.btn_toggle_items.setCursor(Qt.PointingHandCursor)
-        self.btn_toggle_items.setStyleSheet(self._get_btn_style(False))
+        self.btn_toggle_items.setStyleSheet(self._get_btn_style(True))
         self.btn_toggle_items.clicked.connect(self.on_items_clicked)
+        self.btn_toggle_items.setVisible(False) # Hidden initially
         self.layout.addWidget(self.btn_toggle_items)
 
         # Items Content
@@ -272,7 +299,7 @@ class LegendWidget(QWidget):
         if viewer.json_data_path:
             try:
                 with open(viewer.json_data_path, 'w') as f:
-                    json.dump(viewer.boq_data, f, indent=4)
+                    json.dump(viewer.boq_data, f, indent=4, cls=NpEncoder)
             except Exception as e:
                 print(f"Error saving JSON after adding measurement: {e}")
                 
@@ -290,14 +317,25 @@ class LegendWidget(QWidget):
         self.btn_toggle_ocr_labels.setStyleSheet(self._get_btn_style(is_checked))
         self.ocrLabelsToggled.emit(is_checked)
 
+    def on_image_clicked(self):
+        is_checked = self.btn_toggle_image.isChecked()
+        self.btn_toggle_image.setText("Hide Base Image" if is_checked else "Show Base Image")
+        self.btn_toggle_image.setIcon(qta.icon('fa5s.eye', color='white') if is_checked else qta.icon('fa5s.eye-slash', color='white'))
+        self.btn_toggle_image.setStyleSheet(self._get_btn_style(is_checked))
+        self.imageToggled.emit(is_checked)
+
     def on_rooms_clicked(self):
         is_checked = self.btn_toggle_rooms.isChecked()
+        self.btn_toggle_rooms.setText("Hide Rooms and Structures" if is_checked else "Show Rooms and Structures")
+        self.btn_toggle_rooms.setIcon(qta.icon('fa5s.eye', color='white') if is_checked else qta.icon('fa5s.eye-slash', color='white'))
         self.btn_toggle_rooms.setStyleSheet(self._get_btn_style(is_checked))
         self.rooms_wrapper.setVisible(is_checked)
         self.roomsToggled.emit(is_checked)
 
     def on_items_clicked(self):
         is_checked = self.btn_toggle_items.isChecked()
+        self.btn_toggle_items.setText("Hide Items" if is_checked else "Show Items")
+        self.btn_toggle_items.setIcon(qta.icon('fa5s.eye', color='white') if is_checked else qta.icon('fa5s.eye-slash', color='white'))
         self.btn_toggle_items.setStyleSheet(self._get_btn_style(is_checked))
         self.items_wrapper.setVisible(is_checked)
         self.itemsToggled.emit(is_checked)
@@ -353,6 +391,12 @@ class LegendWidget(QWidget):
         self._clear_layout(self.structure_layout)
         self._clear_layout(self.item_layout)
         self.buttons = {}
+        
+        # Show toggle buttons if we have analysis data
+        has_data = bool(boq_data.get('rooms') or boq_data.get('icons'))
+        self.btn_toggle_image.setVisible(has_data)
+        self.btn_toggle_rooms.setVisible(has_data)
+        self.btn_toggle_items.setVisible(has_data)
         
         present_rooms = {} 
         present_structures = {}
@@ -579,7 +623,7 @@ class LegendWidget(QWidget):
         if viewer.json_data_path:
             try:
                 with open(viewer.json_data_path, 'w') as f:
-                    json.dump(viewer.boq_data, f, indent=4)
+                    json.dump(viewer.boq_data, f, indent=4, cls=NpEncoder)
             except Exception as e:
                 print(f"Error saving JSON after rename: {e}")
 
@@ -671,7 +715,7 @@ class LegendWidget(QWidget):
         if viewer.json_data_path:
             try:
                 with open(viewer.json_data_path, 'w') as f:
-                    json.dump(viewer.boq_data, f, indent=4)
+                    json.dump(viewer.boq_data, f, indent=4, cls=NpEncoder)
             except Exception as e:
                 print(f"Error saving JSON after deletion: {e}")
 
@@ -738,7 +782,7 @@ class LegendWidget(QWidget):
                 viewer.select_item_type(target)
                 viewer.select_room_type(None)
 
-    def set_visibility(self, show_rooms, show_items):
+    def set_visibility(self, show_rooms, show_items, show_image=True):
         self.rooms_wrapper.setVisible(show_rooms)
         self.items_wrapper.setVisible(show_items)
         
@@ -746,7 +790,17 @@ class LegendWidget(QWidget):
         self.structure_container.setVisible(has_structures)
         self.lbl_structures.setVisible(has_structures)
         
+        # Update checked states
         self.btn_toggle_rooms.setChecked(show_rooms)
         self.btn_toggle_items.setChecked(show_items)
+        self.btn_toggle_image.setChecked(show_image)
+
+        # Update text dynamically
+        self.btn_toggle_rooms.setText("Hide Rooms and Structures" if show_rooms else "Show Rooms and Structures")
+        self.btn_toggle_items.setText("Hide Items" if show_items else "Show Items")
+        self.btn_toggle_image.setText("Hide Base Image" if show_image else "Show Base Image")
+
+        # Update styles
         self.btn_toggle_rooms.setStyleSheet(self._get_btn_style(show_rooms))
         self.btn_toggle_items.setStyleSheet(self._get_btn_style(show_items))
+        self.btn_toggle_image.setStyleSheet(self._get_btn_style(show_image))
