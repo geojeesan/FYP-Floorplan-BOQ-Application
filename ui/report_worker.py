@@ -22,53 +22,92 @@ class ReportState(TypedDict):
     report_type: str
     provider: str
     model: str
+    boq_standard: str 
     categorized_items: list  
     estimates: list          
     result_json: str
     error: str
 
-POMI_SECTIONS = {
-    "A": "SECTION A - GENERAL REQUIREMENTS",
-    "B": "SECTION B - SITEWORK",
-    "C": "SECTION C - CONCRETE WORKS",
-    "D": "SECTION D - MASONRY",
-    "E": "SECTION E - METALWORK",
-    "F": "SECTION F - WOODWORK",
-    "G": "SECTION G - THERMAL & WATERPROOFING",
-    "H": "SECTION H - DOORS & WINDOWS",
-    "J": "SECTION J - FINISHES",
-    "K": "SECTION K - ACCESSORIES",
-    "L": "SECTION L - EQUIPMENT",
-    "M": "SECTION M - FURNISHINGS",
-    "N": "SECTION N - SPECIAL CONSTRUCTION",
-    "O": "SECTION O - MECHANICAL INSTALLATIONS",
-    "P": "SECTION P - CONVEYING SYSTEMS",
-    "Q": "SECTION Q - ELECTRICAL INSTALLATIONS",
-    "R": "SECTION R - EXTERNAL WORKS"
+# Removed CESMM4. Updated SMM7 Section N to explicitly include Sanitary appliances
+BOQ_STANDARDS = {
+    "POMI": {
+        "A": "SECTION A - GENERAL REQUIREMENTS",
+        "B": "SECTION B - SITEWORK",
+        "C": "SECTION C - CONCRETE WORKS",
+        "D": "SECTION D - MASONRY",
+        "E": "SECTION E - METALWORK",
+        "F": "SECTION F - WOODWORK",
+        "G": "SECTION G - THERMAL & WATERPROOFING",
+        "H": "SECTION H - DOORS & WINDOWS",
+        "J": "SECTION J - FINISHES",
+        "K": "SECTION K - ACCESSORIES",
+        "L": "SECTION L - EQUIPMENT",
+        "M": "SECTION M - FURNISHINGS",
+        "N": "SECTION N - SPECIAL CONSTRUCTION",
+        "O": "SECTION O - MECHANICAL INSTALLATIONS",
+        "P": "SECTION P - CONVEYING SYSTEMS",
+        "Q": "SECTION Q - ELECTRICAL INSTALLATIONS",
+        "R": "SECTION R - EXTERNAL WORKS"
+    },
+    "NRM 2": {
+        "1": "1 - Preliminaries",
+        "5": "5 - Excavating and filling",
+        "11": "11 - In situ concrete",
+        "14": "14 - Masonry",
+        "16": "16 - Carpentry",
+        "28": "28 - Floor, wall, ceiling and roof finishings",
+        "31": "31 - Windows, doors and stairs",
+        "32": "32 - Furniture, fittings and equipment",
+        "38": "38 - Mechanical services",
+        "39": "39 - Electrical services",
+        "41": "41 - Builder's work in connection"
+    },
+    "SMM7": {
+        "A": "A - Preliminaries/General conditions",
+        "D": "D - Groundwork", "E":
+        "E - In situ concrete/Large precast concrete",
+        "F": "F - Masonry",
+        "G": "G - Structural/Carcassing metal/timber",
+        "L": "L - Windows/doors/stairs",
+        "M": "M - Surface finishes",
+        "N": "N - Furniture/equipment/Sanitary appliances",
+        "U": "U - Ventilation/air conditioning",
+        "V": "V - Electrical supply/power/lighting"
+    }
 }
 
-def get_pomi_section(item_no, description):
+def get_fallback_section(item_no, description, standard):
+    """Fallback programmatic categorization based on selected standard."""
     desc = description.lower()
-    if "door" in desc or "window" in desc: return "H"
-    if "tile" in desc or "paint" in desc or "emulsion" in desc or "laminate" in desc or "floor" in desc or "brick slip" in desc: return "J"
-    if "toilet" in desc or "sink" in desc or "washbasin" in desc: return "O"
-    if "appliance" in desc or "oven" in desc or "fridge" in desc or "hob" in desc or "heater" in desc: return "L"
-    if "closet" in desc or "wardrobe" in desc: return "M"
-    if "sauna" in desc: return "N"
-    if "wood" in desc or "oak" in desc: return "F"
     
-    if item_no.startswith("FL") or item_no.startswith("WL"): return "J"
-    if item_no.startswith("DR") or item_no.startswith("WN"): return "H"
-    if item_no.startswith("EA"): return "L"
-    if item_no.startswith("TL") or item_no.startswith("SK"): return "O"
-    if item_no.startswith("CL"): return "M"
-    if item_no.startswith("SB"): return "N"
-    
+    if standard == "POMI":
+        if "door" in desc or "window" in desc: return "H"
+        if "tile" in desc or "paint" in desc or "floor" in desc or "brick slip" in desc: return "J"
+        if "toilet" in desc or "sink" in desc or "washbasin" in desc: return "O"
+        if "appliance" in desc or "oven" in desc or "fridge" in desc or "hob" in desc: return "L"
+        if "closet" in desc or "wardrobe" in desc: return "M"
+        if "wood" in desc or "oak" in desc: return "F"
+        return "Z"
+        
+    elif standard == "NRM 2":
+        if "door" in desc or "window" in desc: return "31"
+        if "tile" in desc or "paint" in desc or "floor" in desc: return "28"
+        if "toilet" in desc or "sink" in desc: return "38"
+        if "appliance" in desc or "furniture" in desc: return "32"
+        if "wood" in desc or "carpentry" in desc: return "16"
+        return "Z"
+        
+    elif standard == "SMM7":
+        if "door" in desc or "window" in desc: return "L"
+        if "tile" in desc or "paint" in desc or "floor" in desc: return "M"
+        # Fixed SMM7 plumbing mapping to Section N instead of U
+        if "toilet" in desc or "sink" in desc or "appliance" in desc or "washbasin" in desc: return "N" 
+        if "wood" in desc or "timber" in desc: return "G"
+        return "Z"
+        
     return "Z"
 
 def extract_clean_json(text):
-    """Safely extracts a JSON array from LLM text, stripping markdown and conversational junk."""
-    # Strip markdown code blocks if the AI included them
     if "```json" in text:
         text = text.split("```json")[1]
     if "```" in text:
@@ -120,9 +159,7 @@ def get_db_price_context():
         return "No database averages available. Use standard industry estimates."
     return "\n".join(context)
 
-# QTO specific AI Estimator
 def estimate_qto_unassigned(data, provider, model, progress_signal=None):
-    """Specific function to inject costs into the raw QTO format, offloading math to Python."""
     unassigned = [item for item in data if item.get("Type") == "Sub" and float(item.get("Rate", 0.0)) == 0.0]
     
     if not unassigned:
@@ -135,7 +172,6 @@ def estimate_qto_unassigned(data, provider, model, progress_signal=None):
     db_context = get_db_price_context()
     
     try:
-        # Standard LLM call - No ReAct Agent needed here!
         llm = get_llm(provider, model)
         
         sys_msg = f"""You are a Lead Quantity Surveyor. You have a list of extracted project items with NO ASSIGNED COST (Rate = 0).
@@ -157,27 +193,20 @@ Do NOT calculate the Total_Amount. Only update the 'Rate' and 'Base_Description'
             HumanMessage(content=json.dumps(unassigned, indent=2))
         ]
         
-        print("Requesting rates from LLM...")
         res = llm.invoke(messages).content.strip()
-        print("LLM Response received. Parsing and calculating totals in Python...")
-        
-        # Safely extract and parse JSON using our new helper
         json_str = extract_clean_json(res)
         fixed_items = json.loads(json_str)
         
-        # Map the fixed items by Item_No
         fixed_map = {item.get("Item_No"): item for item in fixed_items if "Item_No" in item}
         
         for i in range(len(data)):
             if data[i].get("Type") == "Sub" and data[i].get("Item_No") in fixed_map:
                 est_item = fixed_map[data[i]["Item_No"]]
                 
-                # 1. Apply the AI's estimated rate and description
                 new_rate = float(est_item.get("Rate", 0.0))
                 data[i]["Rate"] = new_rate
                 data[i]["Base_Description"] = str(est_item.get("Base_Description", data[i]["Base_Description"]))
                 
-                # 2. Instantly calculate the math in Python
                 qty = float(data[i].get("Quantity", 0.0))
                 total = round(qty * new_rate, 2)
                 
@@ -311,77 +340,55 @@ def pre_aggregate_boq_data(data):
         
     return final_list
 
-def generate_estimates_node(state: ReportState):
-    if "BOQ" not in state["report_type"]: return state
-    try:
-        llm = get_llm(state["provider"], state["model"])
-        sys_msg = """You are a Lead Estimator. Generate missing standard preliminary estimates for a building. 
-You MUST generate exactly one or more items for each of these sections:
-- Section A (General Requirements: e.g., Site Setup)
-- Section B (Sitework: e.g., Excavation)
-- Section C (Concrete Works: e.g., Foundation Slab)
-- Section D (Masonry: e.g., Bricklaying)
-- Section E (Metalwork: e.g., Structural Steel)
-
-CRITICAL RULES:
-1. "Section_Code" must be "A", "B", "C", "D", or "E".
-2. "Section_Name" must be EXACTLY as listed above  (e.g., "SECTION A - GENERAL REQUIREMENTS").
-3. Description must start with "[AI Estimate] - ".
-4. Provide REALISTIC numerical values for Rate, Total_Amount, and Final_Amount. Do not use 0.0 for totals.
-
-Output ONLY a JSON array of these objects. Start with [ and end with ]."""
-
-        messages = [SystemMessage(content=sys_msg), HumanMessage(content="Generate the 5 estimates now.")]
-        res = llm.invoke(messages).content.strip()
-        start, end = res.find('['), res.rfind(']')
-        if start != -1 and end != -1: state["estimates"] = json.loads(res[start:end+1])
-        else: state["estimates"] = []
-    except Exception as e:
-        state["estimates"] = []
-    return state
-
 def categorize_hybrid_node(state: ReportState):
     if "BOQ" not in state["report_type"]: return state
     categorized = []
     unknowns = []
     
+    standard = state.get("boq_standard", "POMI")
+    sections_dict = BOQ_STANDARDS.get(standard, BOQ_STANDARDS["POMI"])
+    
     for item in state["raw_items"]:
-        code = get_pomi_section(item["Item_No"], item["Base_Description"])
+        code = get_fallback_section(item["Item_No"], item["Base_Description"], standard)
         item_copy = item.copy()
         item_copy["Description"] = f"{item['Base_Description']} (Location: {item['Location']})"
+        
         if code == "Z": unknowns.append(item_copy)
         else:
             item_copy["Section_Code"] = code
-            item_copy["Section_Name"] = POMI_SECTIONS[code]
+            item_copy["Section_Name"] = sections_dict[code]
             categorized.append(item_copy)
             
     if unknowns:
         try:
             llm = get_llm(state["provider"], state["model"])
-            sys_msg = """You are a master Quantity Surveyor. Categorize the provided list of unknown items into a single POMI section letter.
-POMI SECTIONS: A-General Requirements, B-Sitework, C-Concrete Works, D-Masonry, E-Metalwork, F-Woodwork, G-Thermal & Waterproofing, H-Doors & Windows, J-Finishes, K-Accessories, L-Equipment, M-Furnishings, N-Special Construction, P-Conveying Sysytems, O-Mechanical Installations, Q-Electrical Installations, R-External Works.
+            sections_str = ", ".join([f"{k} - {v}" for k, v in sections_dict.items()])
+            
+            sys_msg = f"""You are a master Quantity Surveyor. Categorize the provided list of unknown items into a single {standard} section code.
+{standard} SECTIONS: {sections_str}
 
-Output ONLY a JSON array mapping the Item_No to the correct Section_Code letter.
-Example: [{"Item_No": "123", "Section_Code": "J"}]"""
+Output ONLY a JSON array mapping the Item_No to the correct Section_Code.
+Example: [{{"Item_No": "123", "Section_Code": "{list(sections_dict.keys())[0]}"}}]"""
 
             messages = [SystemMessage(content=sys_msg), HumanMessage(content=json.dumps(unknowns, indent=2))]
             res = llm.invoke(messages).content.strip()
             
-            start, end = res.find('['), res.rfind(']')
-            if start != -1 and end != -1:
-                llm_results = json.loads(res[start:end+1])
-                for unk in unknowns:
-                    match = next((x for x in llm_results if x.get("Item_No") == unk["Item_No"]), None)
-                    code = match.get("Section_Code", "A") if match else "A"
-                    code = code.upper() if code.upper() in POMI_SECTIONS else "A"
-                    unk["Section_Code"] = code
-                    unk["Section_Name"] = POMI_SECTIONS[code]
-                    categorized.append(unk)
-            else: raise ValueError("LLM returned invalid JSON")
+            json_str = extract_clean_json(res)
+            llm_results = json.loads(json_str)
+            
+            for unk in unknowns:
+                match = next((x for x in llm_results if x.get("Item_No") == unk["Item_No"]), None)
+                code = match.get("Section_Code", list(sections_dict.keys())[0]) if match else list(sections_dict.keys())[0]
+                code = str(code).upper() if str(code).upper() in sections_dict else list(sections_dict.keys())[0]
+                
+                unk["Section_Code"] = code
+                unk["Section_Name"] = sections_dict.get(code, list(sections_dict.values())[0])
+                categorized.append(unk)
         except Exception as e:
             for unk in unknowns:
-                unk["Section_Code"] = "A"
-                unk["Section_Name"] = POMI_SECTIONS["A"]
+                code = list(sections_dict.keys())[0]
+                unk["Section_Code"] = code
+                unk["Section_Name"] = sections_dict[code]
                 categorized.append(unk)
                 
     state["categorized_items"] = categorized
@@ -418,14 +425,44 @@ Output ONLY a JSON array of the updated objects. Maintain the exact same keys:
         messages = [SystemMessage(content=sys_msg), HumanMessage(content=json.dumps(unassigned, indent=2))]
         res = agent.invoke({"messages": messages})
         content = res["messages"][-1].content.strip()
-        start, end = content.find('['), content.rfind(']')
-        if start != -1 and end != -1:
-            fixed_items = json.loads(content[start:end+1])
-            state["categorized_items"] = assigned + fixed_items
-        else: raise ValueError("Agent failed to return valid JSON.")
+        
+        json_str = extract_clean_json(content)
+        fixed_items = json.loads(json_str)
+        state["categorized_items"] = assigned + fixed_items
     except Exception as e:
         print(f"Unassigned Estimator Error: {e}")
         
+    return state
+
+def generate_estimates_node(state: ReportState):
+    if "BOQ" not in state["report_type"]: return state
+    try:
+        llm = get_llm(state["provider"], state["model"])
+        standard = state.get("boq_standard", "POMI")
+        sections_dict = BOQ_STANDARDS.get(standard, BOQ_STANDARDS["POMI"])
+        
+        target_codes = list(sections_dict.keys())[:3]
+        target_reqs = "\n".join([f"- Section {c} ({sections_dict[c]})" for c in target_codes])
+        valid_codes_str = ", ".join([f'"{c}"' for c in target_codes])
+
+        sys_msg = f"""You are a Lead Estimator. Generate missing standard preliminary estimates for a building. 
+You MUST generate exactly one or more items for each of these {standard} sections:
+{target_reqs}
+
+CRITICAL RULES:
+1. "Section_Code" must be {valid_codes_str}.
+2. "Section_Name" must be EXACTLY matched to the code (e.g., "{sections_dict[target_codes[0]]}").
+3. Description must start with "[AI Estimate] - ".
+4. Provide REALISTIC numerical values for Rate, Total_Amount, and Final_Amount. Do not use 0.0 for totals.
+
+Output ONLY a JSON array of these objects. Start with [ and end with ]."""
+
+        messages = [SystemMessage(content=sys_msg), HumanMessage(content="Generate the estimates now.")]
+        res = llm.invoke(messages).content.strip()
+        json_str = extract_clean_json(res)
+        state["estimates"] = json.loads(json_str)
+    except Exception as e:
+        state["estimates"] = []
     return state
 
 def compile_json_node(state: ReportState):
@@ -433,8 +470,11 @@ def compile_json_node(state: ReportState):
     try:
         final_rows = []
         grouped_sections = {}
+        standard = state.get("boq_standard", "POMI")
+        sections_dict = BOQ_STANDARDS.get(standard, BOQ_STANDARDS["POMI"])
+        
         for item in state.get("categorized_items", []):
-            code = item["Section_Code"]
+            code = str(item["Section_Code"])
             if code not in grouped_sections: grouped_sections[code] = {"name": item["Section_Name"], "items": []}
             grouped_sections[code]["items"].append({
                 "Heading": "", "Item_No": item["Item_No"], "Description": item["Description"],
@@ -444,9 +484,10 @@ def compile_json_node(state: ReportState):
             })
             
         for est in state.get("estimates", []):
-            code = est.get("Section_Code", "A").upper()
-            code = code if code in POMI_SECTIONS else "A"
-            name = POMI_SECTIONS[code]
+            code = str(est.get("Section_Code", list(sections_dict.keys())[0]))
+            code = code if code in sections_dict else list(sections_dict.keys())[0]
+            name = sections_dict[code]
+            
             if code not in grouped_sections: grouped_sections[code] = {"name": name, "items": []}
             grouped_sections[code]["items"].append({
                 "Heading": "", "Item_No": "", "Description": est.get("Description", "[AI Estimate] - Item"),
@@ -455,7 +496,12 @@ def compile_json_node(state: ReportState):
                 "Final_Amount": est.get("Final_Amount", 0.0)
             })
             
-        for code in sorted(grouped_sections.keys()):
+        # Custom sort key: if the code is all digits (like NRM 2), sort it as an integer.
+        def section_sort_key(code):
+            text = str(code)
+            return (0, int(text)) if text.isdigit() else (1, text)
+
+        for code in sorted(grouped_sections.keys(), key=section_sort_key):
             section = grouped_sections[code]
             final_rows.append({
                 "Heading": section["name"], "Item_No": "", "Description": "", "Unit": "",
@@ -488,22 +534,20 @@ class ReportWorker(QThread):
     error = Signal(str)
     progress = Signal(str) 
 
-    def __init__(self, exact_math_data, report_type, provider, model):
+    def __init__(self, exact_math_data, report_type, provider, model, boq_standard="POMI"):
         super().__init__()
         self.exact_math_data = exact_math_data
         self.report_type = report_type
         self.provider = provider
         self.model = model
+        self.boq_standard = boq_standard 
 
     def run(self):
         try:
             # QTO Logic
             if "QTO" in self.report_type or "Take-off" in self.report_type:
                 self.progress.emit("Reviewing Measurement Sheet items for missing costs...")
-                
-                # Run the AI to estimate unassigned items before generating the final sheet
                 estimated_data = estimate_qto_unassigned(self.exact_math_data, self.provider, self.model, self.progress)
-                
                 self.progress.emit("Structuring final Measurement Sheet rows...")
                 json_output = generate_qto_programmatically(estimated_data)
                 
@@ -520,6 +564,7 @@ class ReportWorker(QThread):
                 "report_type": self.report_type,
                 "provider": self.provider,
                 "model": self.model,
+                "boq_standard": self.boq_standard, 
                 "categorized_items": [],
                 "estimates": [],
                 "result_json": "",
@@ -534,11 +579,11 @@ class ReportWorker(QThread):
                     current_state.update(state_update) 
                     
                     if node_name == "categorize":
-                        self.progress.emit("Categorizing items into POMI Industry Sections...")
+                        self.progress.emit(f"Categorizing items into {self.boq_standard} Industry Sections...")
                     elif node_name == "estimate_unassigned":
                         self.progress.emit("Agent calculating costs for unassigned items...")
                     elif node_name == "estimate_preliminaries":
-                        self.progress.emit("Generating standard preliminary estimates (Sections A-E)...")
+                        self.progress.emit(f"Generating standard preliminary estimates for {self.boq_standard}...")
                     elif node_name == "compile":
                         self.progress.emit("Compiling final JSON report format...")
             

@@ -132,7 +132,7 @@ class CubiCasaWorker(QThread):
             except Exception as e:
                 print(f"Polygon extraction error: {e}")
 
-            # --- SAVE DATA ---
+            # Save Data
             base_name = os.path.splitext(os.path.basename(self.image_path))[0]
             room_path = f"temp_{base_name}_rooms.png"
             item_path = f"temp_{base_name}_items.png"

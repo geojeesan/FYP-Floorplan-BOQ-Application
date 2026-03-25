@@ -4,7 +4,7 @@ import json
 import pandas as pd
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QMessageBox, 
-    QLabel, QFileDialog, QProgressBar
+    QLabel, QFileDialog, QProgressBar, QComboBox
 )
 from PySide6.QtCore import Qt
 import qtawesome as qta
@@ -106,10 +106,24 @@ class ExportPanel(QWidget):
         self.qto_downloads_layout.addWidget(self.btn_qto_excel)
 
         # BOQ Section
+        boq_layout = QHBoxLayout()
+        
         self.btn_boq = QPushButton(" Generate BOQ")
         self.btn_boq.setIcon(qta.icon('fa5s.file-invoice-dollar', color='white'))
         self.btn_boq.setStyleSheet(btn_style)
         self.btn_boq.clicked.connect(lambda: self.start_hybrid_generation("Bill of Quantities (BOQ)"))
+        
+        self.boq_standard_combo = QComboBox()
+        # REMOVED CESMM4
+        self.boq_standard_combo.addItems(["POMI", "NRM 2", "SMM7"]) 
+        self.boq_standard_combo.setStyleSheet("""
+            QComboBox {
+                padding: 10px; border-radius: 6px; border: 0px solid #ccc; font-size: 14px;
+            }
+        """)
+        
+        boq_layout.addWidget(self.btn_boq, stretch=3)
+        boq_layout.addWidget(self.boq_standard_combo, stretch=1)
         
         self.boq_downloads_layout = QHBoxLayout()
         self.btn_boq_csv = QPushButton(" Download CSV")
@@ -137,7 +151,7 @@ class ExportPanel(QWidget):
         layout.addWidget(self.btn_qto)
         layout.addLayout(self.qto_downloads_layout)
         
-        layout.addWidget(self.btn_boq)
+        layout.addLayout(boq_layout) 
         layout.addLayout(self.boq_downloads_layout)
         
         layout.addWidget(self.btn_cad)
@@ -165,7 +179,6 @@ class ExportPanel(QWidget):
         ratio = float(viewer.pixel_to_unit_ratio or 1.0)
         default_height = 2.4 
 
-        # 1. Count rooms to append numbers to duplicates (e.g. Outdoor Area 1)
         room_totals = {}
         for item in data.get('rooms', []):
             label = item.get('label', 'Unknown Space')
@@ -199,7 +212,6 @@ class ExportPanel(QWidget):
         rows = []
         item_counter = 1
 
-        # 2. Iterate each Room Boundary
         for unique_label, poly, item in room_polys:
             pts = item.get('points', [])
             l, w, perimeter = "", "", 0
@@ -215,7 +227,6 @@ class ExportPanel(QWidget):
             area_px = item.get('area_pixels', 0)
             area_val = round(area_px * (ratio ** 2), 2)
             
-            # Append Room Header
             rows.append({
                 "Type": "Header", "Heading": unique_label, "Base_Description": "", "Category": "Space/Room",
                 "Unit": "sqm", "Length": l, "Width": w, "Height": default_height, "Quantity": area_val, 
@@ -226,7 +237,6 @@ class ExportPanel(QWidget):
             has_flooring = False
             has_wall = False
             
-            # Append Materials
             for cat, mat_data in materials.items():
                 desc = mat_data.get('name', '')
                 
@@ -242,7 +252,6 @@ class ExportPanel(QWidget):
                 markup = float(db_record.get('Markup_Percentage', 0.0))
                 rate = float(db_record.get('Cost_per_Unit', mat_data.get('cost', 0.0)))
                 
-                # Paint Conversion
                 if raw_unit in ['litre', 'litres', 'l']:
                     unit = 'litre'
                     floor_qty = round(area_val / 5.0, 2)
@@ -294,7 +303,6 @@ class ExportPanel(QWidget):
                 })
                 item_counter += 1
 
-            # Append Icons
             for icon_obj in unassigned_icons:
                 if not icon_obj["matched"] and len(icon_obj["pts"]) > 0:
                     pts = icon_obj["pts"]
@@ -342,12 +350,10 @@ class ExportPanel(QWidget):
                                 })
                                 item_counter += 1
                         else:
-                            # Force unassigned items to 0.0 so the AI Estimator catches them
                             official_item_no = f"EST-{item_counter:03d}"
                             unit = 'ea'
                             markup = 0.0
                             rate = 0.0
-                            
                             total_amt = 0.0
                             final_amt = 0.0
 
@@ -376,10 +382,11 @@ class ExportPanel(QWidget):
         
         provider = self.main_window.chat_panel.provider_combo.currentText()
         model = self.main_window.chat_panel.model_combo.currentText()
+        boq_standard = self.boq_standard_combo.currentText()
         
         exact_math_list = self._prepare_hierarchical_data(viewer)
             
-        self.worker = ReportWorker(exact_math_list, report_type, provider, model)
+        self.worker = ReportWorker(exact_math_list, report_type, provider, model, boq_standard)
         self.worker.progress.connect(self.update_progress)
         self.worker.finished.connect(self.on_report_finished)
         self.worker.error.connect(self.on_report_error)
@@ -465,7 +472,7 @@ class ExportPanel(QWidget):
                                     
                     wb.save(file_path)
                 except ImportError:
-                    print("openpyxl missing. Saved basic unformatted Excel file.")
+                    pass
                 except Exception as e:
                     print(f"Failed to apply Excel styling: {e}")
                 

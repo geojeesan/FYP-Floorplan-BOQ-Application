@@ -1,9 +1,11 @@
-# Application for Automated Bill of Quantities Generation & Extraction of Architectural Elements from 2D Floor Plans
-
-<img src="resources/logo.png" alt="Logo" width="200"/>
+<p align="center">
+    <img src="resources/logo.png" alt="Logo" width="200"/>
+    <h1 align="center">Application for Automated Bill of Quantities Generation & Extraction of Architectural Elements from 2D Floor Plans</h1>
+    <h5 align="center">Geo Noel Jeesan | 2509624 | gnj224@student.bham.ac.uk</h5>
+</p>
 
 ## Overview
-**PDF BOQ Viewer** is a desktop application designed for quantity surveyors, estimators, and architects. It automates the extraction of architectural features from 2D floor plans (PDFs or Images) to rapidly generate a Bill of Quantities (BOQ). The software combines deep learning for image segmentation, Optical Character Recognition (OCR) for text extraction, 3D visualization, and an AI Chatbot for assisted analysis.
+This project is a desktop application designed for quantity surveyors, estimators, and architects. It automates the extraction of architectural features from 2D floor plans (PDFs or Images) to rapidly generate a Bill of Quantities (BOQ). The software combines deep learning for image segmentation, Optical Character Recognition (OCR) for text extraction, 3D visualization, and an AI Chatbot for assisted analysis.
 
 ## Problem Statement
 Quantity surveyors and estimators spend a significant amount of time manually taking measurements, calculating areas, and counting items from 2D floor plans to generate a Bill of Quantities. This manual takeoff process is tedious, time consuming, and prone to error. Furthermore, visualizing the spatial layout requires mental effort or separate, complex CAD software. There is a need for an automated solution that bridges the gap between 2D architectural drawings and actionable cost estimations.
@@ -29,7 +31,7 @@ The **PDF BOQ Viewer** significantly reduces the time required for manual takeof
 
 ## Demo
 
-[Video](https://www.youtube.com/watch?v=ADBbxf-RhVI)
+https://www.youtube.com/watch?v=ADBbxf-RhVI
 
 ## How to Get It Running
 
@@ -69,5 +71,5 @@ It is highly recommended to run this on Windows. Although theoretically it can r
    python main.py
    ```
 
-### Configuration (Optional)
-- **Settings & API Keys:** You can configure API keys for the AI Chatbot (OpenAI, Google, Anthropic, etc.) directly within the application via the **Settings** menu (gear icon). This will save your configurations to a `.env` file automatically. Running models locally using Ollama is also supported.
+### Configuration
+- **Settings & API Keys:** You can configure API keys for the AI Chatbot (OpenAI, Google, Anthropic, etc.) directly within the application via the **Settings** menu (gear icon). This will save your configurations to a `.env` file automatically. Running models locally using Ollama is also supported and is the default. You need to set atleast one of these to get the chatbot and QTO/BOQ generation to work.
