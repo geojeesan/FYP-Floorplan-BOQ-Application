@@ -989,6 +989,9 @@ class PDFViewerApp(QMainWindow):
         QMessageBox.warning(self, "OCR Error", err_msg)
 
     def match_text_to_rooms(self, boq_data, ocr_results):
+        for room in boq_data.get('rooms', []):
+            room['ocr_text'] = ""
+            
         if not ocr_results: return boq_data
 
         rooms_with_poly = []
@@ -1034,6 +1037,16 @@ class PDFViewerApp(QMainWindow):
         boq = viewer.boq_data
         if not boq: return
 
+        # Sync the latest text edits/deletions from canvas to boq_data before applying
+        all_text_items = viewer.ocr_data.copy()
+        if hasattr(viewer, 'get_manual_text_data'):
+            manual_data = viewer.get_manual_text_data()
+            if manual_data:
+                all_text_items.extend(manual_data)
+                
+        boq = self.match_text_to_rooms(boq, all_text_items)
+
+        # Apply labels
         for room in boq.get('rooms', []):
             cid = room.get('class_id', -1)
             original_label = constants.ROOM_CLASSES[cid] if 0 <= cid < len(constants.ROOM_CLASSES) else "Unknown"

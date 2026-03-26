@@ -292,6 +292,25 @@ class DocumentViewer(QWidget):
             self.clear_measurements()
             if hasattr(self.window(), 'update_toolbar_state'):
                 self.window().update_toolbar_state()
+        elif event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            items = self.scene.selectedItems()
+            if items:
+                changed = False
+                for item in items:
+                    itype = item.data(0)
+                    dict_id = item.data(1)
+                    if itype == "ocr":
+                        self.ocr_data = [d for d in self.ocr_data if id(d) != dict_id]
+                        changed = True
+                    elif itype == "manual":
+                        self.manual_text_labels = [d for d in self.manual_text_labels if id(d) != dict_id]
+                        changed = True
+                
+                if changed:
+                    self.update_view()
+                    event.accept()
+                    return
+            super().keyPressEvent(event)
         else:
             super().keyPressEvent(event)
 
@@ -524,6 +543,17 @@ class DocumentViewer(QWidget):
                 text_item = self.scene.addText(txt, ocr_font)
                 text_item.setDefaultTextColor(Qt.black)
                 
+                # Make text selectable, copyable, and editable natively
+                text_item.setTextInteractionFlags(Qt.TextEditorInteraction)
+                text_item.setFlag(QGraphicsItem.ItemIsSelectable, True)
+                text_item.setData(0, "ocr")
+                text_item.setData(1, id(item))
+                
+                # Bind edits directly to the underlying data
+                def make_ocr_updater(t_item, d_dict):
+                    return lambda: d_dict.update({"text": t_item.toPlainText()})
+                text_item.document().contentsChanged.connect(make_ocr_updater(text_item, item))
+                
                 rect = text_item.boundingRect()
 
                 text_item.setTransformOriginPoint(rect.width() / 2, rect.height() / 2)
@@ -619,6 +649,17 @@ class DocumentViewer(QWidget):
                  
                  text_item = self.scene.addText(txt, label_font)
                  text_item.setDefaultTextColor(Qt.blue)
+                 
+                 # Make text selectable, copyable, and editable natively
+                 text_item.setTextInteractionFlags(Qt.TextEditorInteraction)
+                 text_item.setFlag(QGraphicsItem.ItemIsSelectable, True)
+                 text_item.setData(0, "manual")
+                 text_item.setData(1, id(item))
+                 
+                 # Bind edits directly to the underlying data
+                 def make_manual_updater(t_item, d_dict):
+                     return lambda: d_dict.update({"text": t_item.toPlainText()})
+                 text_item.document().contentsChanged.connect(make_manual_updater(text_item, item))
                  
                  rect = text_item.boundingRect()
                  text_item.setPos(pos.x() - rect.width()/2, pos.y() - rect.height()/2)

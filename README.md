@@ -1,8 +1,8 @@
-<p align="center">
+<div align="center">
     <img src="resources/logo.png" alt="Logo" width="200"/>
     <h1 align="center">Application for Automated Bill of Quantities Generation & Extraction of Architectural Elements from 2D Floor Plans</h1>
     <h5 align="center">Geo Noel Jeesan | 2509624 | gnj224@student.bham.ac.uk</h5>
-</p>
+</div>
 
 ## Overview
 This project is a desktop application designed for quantity surveyors, estimators, and architects. It automates the extraction of architectural features from 2D floor plans (PDFs or Images) to rapidly generate a Bill of Quantities (BOQ). The software combines deep learning for image segmentation, Optical Character Recognition (OCR) for text extraction, 3D visualization, and an AI Chatbot for assisted analysis.
