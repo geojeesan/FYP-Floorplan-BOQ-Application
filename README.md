@@ -29,14 +29,16 @@ The application is built using a modern technology stack to ensure performance, 
 ## Results
 The **PDF BOQ Viewer** significantly reduces the time required for manual takeoff. By combining spatial segmentation with OCR, the application accurately identifies rooms and calculates their areas, subsequently generating detailed, scaled BOQ estimates. The built-in 3D modeler gives estimators an immediate spatial understanding of the project without needing external CAD tools, and the AI chatbot provides contextual assistance on demand.
 
+## Report
+You can find the full project report [here](https://git.cs.bham.ac.uk/projects-2025-26/gnj224/-/raw/main/project/gnj224_FYP_Report.pdf?ref_type=heads&inline=true).
+
 ## Demo
+You can see a video demonstration of the application [here](https://www.youtube.com/watch?v=ADBbxf-RhVI).
 
-https://www.youtube.com/watch?v=ADBbxf-RhVI
-
-## Running
+## Running the Application
 
 ### Note
-It is highly recommended to run this on Windows. Although theoretically it can run on Linux and macOS, it has not been tested in other Operating Systems.
+It is highly recommended to run this on Windows. Although theoretically it can run on Linux and macOS, it has not been tested in other Operating Systems. Certain features like Mica background are also only available on Windows.
 
 ### Prerequisites
 - Python 3.10 or higher.
@@ -73,3 +75,51 @@ It is highly recommended to run this on Windows. Although theoretically it can r
 
 ### Configuration
 - **Settings & API Keys:** You can configure API keys for the AI Chatbot (OpenAI, Google, Anthropic, etc.) directly within the application via the **Settings** menu (gear icon). This will save your configurations to a `.env` file automatically. Running models locally using Ollama is also supported and is the default. You need to set atleast one of these to get the chatbot and QTO/BOQ generation to work.
+
+## Repository Structure
+The `floortrans` and `model_stuff` folders contain code from the [CubiCasa5k Repository](https://github.com/CubiCasa/CubiCasa5k).
+Small modifications have been made to certain files to fix bugs related to outdated libraries and packages.
+```
+└── main.py
+└── worker.py
+└── 📁ui
+    ├── chat.py
+    ├── db_editor.py
+    ├── export_panel.py
+    ├── legend.py
+    ├── main_window.py
+    ├── material_assigner.py
+    ├── model_3d.py
+    ├── report_worker.py
+    └── viewer.py
+└── constants.py
+└── database.py
+└── model_best_val_loss_var.pkl     (model weights)
+└── boq_materials.db                (sqlite database)
+└── style.qss                       (stylesheet)
+└── requirements.txt
+└── 📁floortrans                    (Imported from CubiCasa5k Repo)
+    └── 📁loaders
+        ├── augmentations.py
+        ├── house.py
+        ├── svg_loader.py
+        ├── svg_utils.py
+    └── 📁losses
+        ├── uncertainty_loss_new.py (Modified uncertainity loss code)
+        ├── uncertainty_loss.py
+    └── 📁models
+        ├── hg_furukawa_new.py      (Modified model architecture code)
+        ├── hg_furukawa_original.py
+        ├── model_1427.pth
+        ├── model_1427.py
+    ├── metrics.py
+    ├── plotting.py
+    └── post_prosessing.py
+└── 📁model_stuff                   (Imported from CubiCasa5k Repo)
+    ├── create_lmdb.py
+    ├── eval_job.sh                 (Added Slurm job script)
+    ├── eval.py
+    ├── train_job.sh                (Added Slurm job script)
+    ├── train_new.py                (Modified training code)
+    └── train.py
+```
