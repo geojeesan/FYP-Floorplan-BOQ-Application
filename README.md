@@ -33,7 +33,7 @@ The **PDF BOQ Viewer** significantly reduces the time required for manual takeof
 
 https://www.youtube.com/watch?v=ADBbxf-RhVI
 
-## How to Get It Running
+## Running
 
 ### Note
 It is highly recommended to run this on Windows. Although theoretically it can run on Linux and macOS, it has not been tested in other Operating Systems.
